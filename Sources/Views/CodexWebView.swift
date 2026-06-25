@@ -12,9 +12,8 @@ enum CodexWebSession {
     }
 }
 
-/// Embedded Codex / ChatGPT login. Detects successful login.
+/// Full Codex login web view with desktop-grade flow (password, 2FA, confirmation).
 struct CodexLoginView: UIViewRepresentable {
-    let urlString: String
     var onLoginDetected: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onLoginDetected: onLoginDetected) }
@@ -23,13 +22,17 @@ struct CodexLoginView: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.allowsInlineMediaPlayback = true
+        config.defaultWebpagePreferences.preferredContentMode = .desktop // full desktop confirmation flow
+
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = true
+        // Desktop user agent so OpenAI shows the full PC login + confirmation.
         web.customUserAgent =
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 " +
-            "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        if let url = URL(string: urlString) { web.load(URLRequest(url: url)) }
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+            "(KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+        context.coordinator.webView = web
+        web.load(URLRequest(url: URL(string: "https://chatgpt.com/codex")!))
         return web
     }
 
@@ -37,17 +40,19 @@ struct CodexLoginView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         let onLoginDetected: () -> Void
+        weak var webView: WKWebView?
         init(onLoginDetected: @escaping () -> Void) { self.onLoginDetected = onLoginDetected }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             let url = webView.url?.absoluteString ?? ""
-            // Heuristic: reaching the app/workspace pages means we're logged in.
-            if url.contains("chatgpt.com") && !url.contains("/auth") && !url.contains("login") {
-                webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                    if cookies.contains(where: { $0.name.contains("session") || $0.name.contains("__Secure") }) {
-                        DispatchQueue.main.async { self.onLoginDetected() }
-                    }
+            guard url.contains("chatgpt.com"),
+                  !url.contains("/auth"), !url.contains("login"), !url.contains("oauth") else { return }
+            // Verify a real session cookie exists before marking logged in.
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                let hasSession = cookies.contains {
+                    $0.name.contains("session") || $0.name.hasPrefix("__Secure-next-auth")
                 }
+                if hasSession { DispatchQueue.main.async { self.onLoginDetected() } }
             }
         }
     }
@@ -60,25 +65,29 @@ struct CodexLoginSheet: View {
 
     var body: some View {
         NavigationStack {
-            CodexLoginView(urlString: "https://chatgpt.com/codex") {
-                session.isCodexLoggedIn = true
+            ZStack(alignment: .top) {
+                CodexLoginView { session.isCodexLoggedIn = true }
+                    .ignoresSafeArea(edges: .bottom)
+                if !session.isCodexLoggedIn {
+                    Text("Войди в свой аккаунт Codex и подтверди вход — как на ПК")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(8).frame(maxWidth: .infinity)
+                        .background(.ultraThinMaterial)
+                }
             }
-            .ignoresSafeArea(edges: .bottom)
             .navigationTitle("Вход в Codex")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
         }
     }
 
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Закрыть") { dismiss() }
-        }
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) { Button("Закрыть") { dismiss() } }
         ToolbarItem(placement: .confirmationAction) {
             if session.isCodexLoggedIn {
-                Label("Вошёл", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Button { dismiss() } label: {
+                    Label("Готово", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                }
             }
         }
     }

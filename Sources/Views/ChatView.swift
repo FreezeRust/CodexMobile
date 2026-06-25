@@ -245,13 +245,32 @@ struct ChatView: View {
         store.appendMessage(Message(role: .assistant, content: ""),
                             projectID: projectID, chatID: chatID)
 
-        // Codex models are not callable via API key — guide the user.
+        // Codex models run through the logged-in web session via CodexBridge.
         if sel.source == .codex {
-            store.updateLastAssistantMessage(
-                "⚠️ Прямой вызов Codex-моделей через аккаунт пока не поддерживается API OpenAI. " +
-                "Открой вкладку «Настройки» → «Codex» для работы в веб-Codex, либо выбери модель по API.",
-                projectID: projectID, chatID: chatID)
-            store.save()
+            guard session.isCodexLoggedIn else {
+                store.updateLastAssistantMessage(
+                    "⚠️ Нет активной сессии Codex. Открой «Настройки → Codex» и войди в аккаунт.",
+                    projectID: projectID, chatID: chatID)
+                store.save()
+                return
+            }
+            isStreaming = true
+            defer { isStreaming = false }
+            do {
+                var acc = ""
+                try await CodexBridge.shared.send(prompt: text) { partial in
+                    acc = partial
+                    store.updateLastAssistantMessage(partial, projectID: projectID, chatID: chatID)
+                }
+                store.save()
+                let files = CodeExtractor.extract(from: acc)
+                if !files.isEmpty { store.attachFiles(files, projectID: projectID) }
+            } catch {
+                errorText = error.localizedDescription
+                store.updateLastAssistantMessage("⚠️ \(error.localizedDescription)",
+                                                 projectID: projectID, chatID: chatID)
+                store.save()
+            }
             return
         }
 
