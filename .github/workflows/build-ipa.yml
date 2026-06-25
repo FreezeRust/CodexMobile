@@ -1,0 +1,54 @@
+name: Build unsigned IPA
+
+# Собирает НЕПОДПИСАННЫЙ .ipa на бесплатном macOS-раннере GitHub.
+# Готовый .ipa скачиваешь из Artifacts и ставишь через SideStore
+# (SideStore сам подпишет его твоим сертификатом на телефоне).
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: CodexMobile
+        run: xcodegen generate
+
+      - name: Build (no codesign)
+        working-directory: CodexMobile
+        run: |
+          xcodebuild \
+            -project CodexMobile.xcodeproj \
+            -scheme CodexMobile \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Package into .ipa
+        working-directory: CodexMobile
+        run: |
+          APP_PATH="build/Build/Products/Release-iphoneos/CodexMobile.app"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r CodexMobile.ipa Payload
+          rm -rf Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexMobile-unsigned-ipa
+          path: CodexMobile/CodexMobile.ipa
+          if-no-files-found: error

@@ -1,0 +1,32 @@
+name: CodexMobile
+options:
+  bundleIdPrefix: ai.codexmobile
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+
+targets:
+  CodexMobile:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Sources
+    info:
+      path: Sources/App/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.codexmobile.app
+        INFOPLIST_FILE: Sources/App/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: "NO"
