@@ -35,10 +35,10 @@ struct ProjectsView: View {
         if store.projects.isEmpty {
             VStack(spacing: 18) {
                 ZStack {
-                    Circle().fill(settings.accent.gradient.opacity(0.2)).frame(width: 110, height: 110)
+                    Circle().fill(settings.accentGradient.opacity(0.2)).frame(width: 110, height: 110)
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 46, weight: .bold))
-                        .foregroundStyle(settings.accent.gradient)
+                        .foregroundStyle(settings.accentGradient)
                 }
                 Text("Нет проектов").font(.title2.bold())
                 Text("Создай первый проект, чтобы начать чат с ИИ\nи генерировать файлы прямо на телефоне.")
@@ -49,7 +49,7 @@ struct ProjectsView: View {
                 } label: {
                     Label("Создать проект", systemImage: "plus")
                         .font(.headline).padding(.horizontal, 22).padding(.vertical, 12)
-                        .background(settings.accent.gradient, in: Capsule())
+                        .background(settings.accentGradient, in: Capsule())
                         .foregroundStyle(.white)
                 }
                 .padding(.top, 4)
@@ -76,7 +76,7 @@ struct ProjectsView: View {
     }
 
     @ViewBuilder private var themedBackground: some View {
-        if let bg = settings.theme.background { bg.ignoresSafeArea() }
+        if let bg = settings.bgColor { bg.ignoresSafeArea() }
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
@@ -94,10 +94,10 @@ struct ProjectCard: View {
         HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(settings.accent.gradient.opacity(0.22))
+                    .fill(settings.accentGradient.opacity(0.22))
                     .frame(width: 48, height: 48)
                 Image(systemName: "folder.fill")
-                    .foregroundStyle(settings.accent.gradient)
+                    .foregroundStyle(settings.accentGradient)
                     .font(.title3)
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -117,6 +117,6 @@ struct ProjectCard: View {
     }
 
     private var cardBG: Color {
-        settings.theme.card ?? Color(.secondarySystemBackground)
+        settings.cardColor ?? Color(.secondarySystemBackground)
     }
 }

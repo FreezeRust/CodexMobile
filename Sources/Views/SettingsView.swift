@@ -5,49 +5,62 @@ struct SettingsView: View {
     @State private var editing: AIProvider?
     @State private var newProvider: AIProvider?
     @State private var showSystemPrompt = false
+    @State private var showThemeEditor = false
 
     var body: some View {
         NavigationStack {
             ZStack {
-                if let bg = settings.theme.background { bg.ignoresSafeArea() }
+                if let bg = settings.bgColor { bg.ignoresSafeArea() }
                 List {
                     appearanceSection
                     providersSection
                     behaviorSection
                     aboutSection
                 }
-                .scrollContentBackground(settings.theme.background == nil ? .visible : .hidden)
+                .scrollContentBackground(settings.bgColor == nil ? .visible : .hidden)
             }
             .navigationTitle("Настройки")
             .sheet(item: $newProvider) { p in ProviderEditor(provider: nil, prefill: p) }
             .sheet(item: $editing) { p in ProviderEditor(provider: p, prefill: nil) }
             .sheet(isPresented: $showSystemPrompt) { systemPromptEditor }
+            .sheet(isPresented: $showThemeEditor) { ThemeEditor() }
         }
     }
 
     // MARK: - Appearance (темы)
 
     private var appearanceSection: some View {
-        Section("Оформление") {
+        Section {
             Picker("Тема", selection: $settings.theme) {
                 ForEach(AppTheme.allCases) { Text($0.title).tag($0) }
             }
             VStack(alignment: .leading, spacing: 10) {
                 Text("Акцент").font(.subheadline)
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     ForEach(AccentTheme.allCases) { acc in
                         Button { settings.accent = acc } label: {
                             Circle()
-                                .fill(acc.gradient)
-                                .frame(width: 34, height: 34)
+                                .fill(acc.gradient(custom: settings.customAccentColor))
+                                .frame(width: 32, height: 32)
                                 .overlay(Circle().stroke(.white, lineWidth: settings.accent == acc ? 3 : 0))
-                                .shadow(color: acc.color.opacity(0.5), radius: 4)
+                                .shadow(color: acc.color(custom: settings.customAccentColor).opacity(0.5), radius: 4)
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
             .padding(.vertical, 4)
+            Button { showThemeEditor = true } label: {
+                HStack {
+                    Label("Создать свою тему", systemImage: "paintpalette.fill")
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Text("Оформление")
+        } footer: {
+            Text("Темы: Системная, Тёмная, Светлая, Midnight, Volt, Чёрно-белая и Своя.")
         }
     }
 
@@ -58,7 +71,7 @@ struct SettingsView: View {
             ForEach(settings.providers) { p in
                 Button { editing = p } label: { providerRow(p) }
                     .swipeActions {
-                        Button("По умолч.") { settings.setDefault(p) }.tint(settings.accent.color)
+                        Button("По умолч.") { settings.setDefault(p) }.tint(settings.accentColor)
                         Button("Удалить", role: .destructive) { settings.delete(p) }
                     }
             }
@@ -81,19 +94,19 @@ struct SettingsView: View {
     private func providerRow(_ p: AIProvider) -> some View {
         HStack(spacing: 12) {
             Image(systemName: p.kind.iconName)
-                .foregroundStyle(settings.accent.gradient)
+                .foregroundStyle(settings.accentGradient)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(p.name).font(.headline).foregroundStyle(.primary)
                     Text(p.kind.rawValue).font(.caption2)
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(settings.accent.color.opacity(0.18), in: Capsule())
+                        .background(settings.accentColor.opacity(0.18), in: Capsule())
                 }
                 Text(p.models.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if p.isDefault { Image(systemName: "star.fill").foregroundStyle(settings.accent.color) }
+            if p.isDefault { Image(systemName: "star.fill").foregroundStyle(settings.accentColor) }
         }
     }
 
@@ -133,7 +146,7 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section {
             HStack {
-                Image(systemName: "bolt.fill").foregroundStyle(settings.accent.gradient)
+                Image(systemName: "bolt.fill").foregroundStyle(settings.accentGradient)
                 VStack(alignment: .leading) {
                     Text("OpenVolt").font(.headline)
                     Text("v1.0 · ИИ-агрегатор на твоём iPhone").font(.caption).foregroundStyle(.secondary)
@@ -177,6 +190,8 @@ struct ProviderEditor: View {
     @State private var baseURL = ProviderKind.openAI.defaultBaseURL
     @State private var modelsText = ""
     @State private var apiKey = ""
+    @State private var supportsImages = false
+    @State private var imageModel = "dall-e-3"
 
     var isEdit: Bool { provider != nil }
 
@@ -213,6 +228,15 @@ struct ProviderEditor: View {
                         Text("Примеры: " + kind.suggestedModels.joined(separator: ", "))
                     }
                 }
+                Section {
+                    Toggle("Может генерировать картинки", isOn: $supportsImages)
+                    if supportsImages {
+                        TextField("Модель изображений (напр. dall-e-3)", text: $imageModel)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                } footer: {
+                    Text("Включи, если у провайдера есть /images/generations (OpenAI: dall-e-3, gpt-image-1).")
+                }
             }
             .navigationTitle(isEdit ? "Изменить" : "Новая нейросеть")
             .navigationBarTitleDisplayMode(.inline)
@@ -232,6 +256,8 @@ struct ProviderEditor: View {
     private func load(_ p: AIProvider) {
         name = p.name; kind = p.kind; baseURL = p.baseURL
         modelsText = p.models.joined(separator: ", ")
+        supportsImages = p.supportsImages
+        imageModel = p.imageModel.isEmpty ? "dall-e-3" : p.imageModel
     }
 
     private func parsedModels() -> [String] {
@@ -242,12 +268,87 @@ struct ProviderEditor: View {
         let models = parsedModels()
         if var p = provider {
             p.name = name; p.kind = kind; p.baseURL = baseURL; p.models = models
+            p.supportsImages = supportsImages; p.imageModel = supportsImages ? imageModel : ""
             settings.update(p, apiKey: apiKey.isEmpty ? nil : apiKey)
         } else {
             let p = AIProvider(name: name, kind: kind, baseURL: baseURL,
-                               models: models, apiKeyRef: UUID().uuidString)
+                               models: models, apiKeyRef: UUID().uuidString,
+                               supportsImages: supportsImages, imageModel: supportsImages ? imageModel : "")
             settings.add(p, apiKey: apiKey)
         }
+        dismiss()
+    }
+}
+
+// MARK: - Theme editor (создание своей темы)
+
+struct ThemeEditor: View {
+    @EnvironmentObject var settings: SettingsStore
+    @Environment(\.dismiss) var dismiss
+
+    @State private var accent: Color = .purple
+    @State private var background: Color = .black
+    @State private var card: Color = .gray
+    @State private var isDark = true
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Цвета") {
+                    ColorPicker("Акцент", selection: $accent, supportsOpacity: false)
+                    ColorPicker("Фон", selection: $background, supportsOpacity: false)
+                    ColorPicker("Карточки / пузыри", selection: $card, supportsOpacity: false)
+                    Toggle("Тёмный режим", isOn: $isDark)
+                }
+                Section("Предпросмотр") {
+                    ZStack {
+                        background
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("OpenVolt").font(.headline).foregroundStyle(isDark ? .white : .black)
+                            HStack {
+                                Spacer()
+                                Text("Привет!").padding(10)
+                                    .background(LinearGradient(colors: [accent, accent.opacity(0.6)],
+                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    .foregroundStyle(.white)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                            }
+                            Text("Ответ ИИ").padding(10)
+                                .background(card)
+                                .foregroundStyle(isDark ? .white : .black)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                        }
+                        .padding()
+                    }
+                    .frame(height: 160)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .listRowInsets(EdgeInsets())
+                }
+            }
+            .navigationTitle("Своя тема")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Применить") { apply() }.bold()
+                }
+            }
+            .onAppear {
+                accent = settings.customAccentColor
+                background = settings.customBackgroundColor
+                card = settings.customCardColor
+                isDark = settings.customIsDark
+            }
+        }
+    }
+
+    private func apply() {
+        settings.customAccentHex = accent.hexString
+        settings.customBackgroundHex = background.hexString
+        settings.customCardHex = card.hexString
+        settings.customIsDark = isDark
+        settings.accent = .custom
+        settings.theme = .custom
         dismiss()
     }
 }

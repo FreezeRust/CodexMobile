@@ -10,8 +10,8 @@ struct OpenVoltApp: App {
             RootView()
                 .environmentObject(appStore)
                 .environmentObject(settings)
-                .tint(settings.accent.color)
-                .preferredColorScheme(settings.theme.colorScheme)
+                .tint(settings.accentColor)
+                .preferredColorScheme(settings.resolvedScheme)
         }
     }
 }

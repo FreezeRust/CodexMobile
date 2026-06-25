@@ -5,9 +5,7 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            if let bg = settings.theme.background {
-                bg.ignoresSafeArea()
-            }
+            if let bg = settings.bgColor { bg.ignoresSafeArea() }
             TabView {
                 ProjectsView()
                     .tabItem { Label("Проекты", systemImage: "square.stack.3d.up.fill") }
@@ -15,6 +13,6 @@ struct RootView: View {
                     .tabItem { Label("Настройки", systemImage: "gearshape.fill") }
             }
         }
-        .tint(settings.accent.color)
+        .tint(settings.accentColor)
     }
 }

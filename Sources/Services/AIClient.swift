@@ -176,6 +176,38 @@ struct AIClient {
         return (req, isAnthropic)
     }
 
+    // MARK: - Image generation (OpenAI images API)
+
+    /// Generates an image and returns base64 PNG/JPEG data (OpenAI-compatible).
+    func generateImage(prompt: String) async throws -> String {
+        guard let key = KeychainService.get(provider.apiKeyRef),
+              !key.trimmingCharacters(in: .whitespaces).isEmpty else { throw AIError.missingKey }
+        guard let url = URL(string: endpoint("/images/generations")) else { throw AIError.badURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 120
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(key.trimmingCharacters(in: .whitespaces))", forHTTPHeaderField: "Authorization")
+        let imgModel = provider.imageModel.isEmpty ? "dall-e-3" : provider.imageModel
+        let payload: [String: Any] = ["model": imgModel, "prompt": prompt,
+                                      "n": 1, "size": "1024x1024", "response_format": "b64_json"]
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
+            throw AIError.http(h.statusCode, parseError(String(data: data, encoding: .utf8) ?? ""))
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = obj["data"] as? [[String: Any]] else { return "" }
+        if let b64 = arr.first?["b64_json"] as? String { return b64 }
+        // Some endpoints return a URL instead
+        if let urlStr = arr.first?["url"] as? String, let u = URL(string: urlStr),
+           let imgData = try? Data(contentsOf: u) {
+            return imgData.base64EncodedString()
+        }
+        return ""
+    }
+
     // MARK: - Helpers
 
     private func endpoint(_ path: String) -> String {
@@ -211,6 +243,47 @@ struct AIClient {
         if let msg = obj["error"] as? String { return msg }
         if let msg = obj["message"] as? String { return msg }
         return String(body.prefix(300))
+    }
+}
+
+/// Parses special structured blocks from an assistant response.
+enum ResponseParser {
+    /// Extract a ```poll ...``` JSON block, if present.
+    static func extractPoll(from text: String) -> Poll? {
+        let pattern = "```poll\\s*\\n([\\s\\S]*?)```"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
+        let ns = text as NSString
+        guard let m = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let json = ns.substring(with: m.range(at: 1))
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let q = obj["question"] as? String,
+              let opts = obj["options"] as? [String], !opts.isEmpty else { return nil }
+        return Poll(question: q, options: opts)
+    }
+
+    /// Detect an explicit image-generation request like ```image\n<prompt>``` or [[image: prompt]].
+    static func extractImagePrompt(from text: String) -> String? {
+        let fence = "```image\\s*\\n([\\s\\S]*?)```"
+        if let regex = try? NSRegularExpression(pattern: fence, options: .caseInsensitive) {
+            let ns = text as NSString
+            if let m = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) {
+                return ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
+    }
+
+    /// Remove our special control blocks from displayed text.
+    static func stripControlBlocks(_ text: String) -> String {
+        var t = text
+        for pat in ["```poll\\s*\\n[\\s\\S]*?```", "```image\\s*\\n[\\s\\S]*?```"] {
+            if let r = try? NSRegularExpression(pattern: pat, options: .caseInsensitive) {
+                let ns = t as NSString
+                t = r.stringByReplacingMatches(in: t, range: NSRange(location: 0, length: ns.length), withTemplate: "")
+            }
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
