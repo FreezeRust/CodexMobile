@@ -1,8 +1,7 @@
 name: Build unsigned IPA
 
-# Собирает НЕПОДПИСАННЫЙ .ipa на бесплатном macOS-раннере GitHub.
-# Готовый .ipa скачиваешь из Artifacts и ставишь через SideStore
-# (SideStore сам подпишет его твоим сертификатом на телефоне).
+# Собирает НЕПОДПИСАННЫЙ .ipa OpenVolt на бесплатном macOS-раннере GitHub.
+# Готовый .ipa скачиваешь из Artifacts и ставишь через SideStore.
 
 on:
   push:
@@ -18,7 +17,6 @@ jobs:
 
       - name: Select latest Xcode
         run: |
-          ls /Applications | grep Xcode
           sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
           xcodebuild -version
 
@@ -31,8 +29,8 @@ jobs:
       - name: Build (no codesign)
         run: |
           xcodebuild \
-            -project CodexMobile.xcodeproj \
-            -scheme CodexMobile \
+            -project OpenVolt.xcodeproj \
+            -scheme OpenVolt \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
@@ -43,15 +41,15 @@ jobs:
 
       - name: Package into .ipa
         run: |
-          APP_PATH="build/Build/Products/Release-iphoneos/CodexMobile.app"
+          APP_PATH="build/Build/Products/Release-iphoneos/OpenVolt.app"
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-          zip -r CodexMobile.ipa Payload
+          zip -r OpenVolt.ipa Payload
           rm -rf Payload
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CodexMobile-unsigned-ipa
-          path: CodexMobile.ipa
+          name: OpenVolt-unsigned-ipa
+          path: OpenVolt.ipa
           if-no-files-found: error

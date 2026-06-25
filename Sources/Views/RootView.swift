@@ -1,18 +1,20 @@
 import SwiftUI
 
 struct RootView: View {
+    @EnvironmentObject var settings: SettingsStore
+
     var body: some View {
-        TabView {
-            ProjectsView()
-                .tabItem { Label("Проекты", systemImage: "folder") }
-
-            CodexWebView(urlString: "https://chatgpt.com/codex")
-                .ignoresSafeArea(edges: .bottom)
-                .tabItem { Label("Codex", systemImage: "globe") }
-
-            SettingsView()
-                .tabItem { Label("Нейросети", systemImage: "brain") }
+        ZStack {
+            if let bg = settings.theme.background {
+                bg.ignoresSafeArea()
+            }
+            TabView {
+                ProjectsView()
+                    .tabItem { Label("Проекты", systemImage: "square.stack.3d.up.fill") }
+                SettingsView()
+                    .tabItem { Label("Настройки", systemImage: "gearshape.fill") }
+            }
         }
-        .tint(.green)
+        .tint(settings.accent.color)
     }
 }

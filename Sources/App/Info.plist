@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>Codex Mobile</string>
+    <string>OpenVolt</string>
     <key>CFBundleName</key>
-    <string>CodexMobile</string>
+    <string>OpenVolt</string>
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleShortVersionString</key>
@@ -22,6 +22,10 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>OpenVolt использует фото для вложений в чат с ИИ.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>OpenVolt может прикреплять снимки к сообщениям.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

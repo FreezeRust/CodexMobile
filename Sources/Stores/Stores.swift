@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-/// Persists projects/chats to disk as JSON in the app's Documents directory.
+/// Persists projects/chats to disk as JSON.
 @MainActor
 final class AppStore: ObservableObject {
     @Published var projects: [Project] = []
@@ -18,43 +18,40 @@ final class AppStore: ObservableObject {
               let decoded = try? JSONDecoder().decode([Project].self, from: data) else { return }
         projects = decoded
     }
-
     func save() {
         guard let data = try? JSONEncoder().encode(projects) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    // Projects
-    func addProject(name: String) {
-        projects.insert(Project(name: name), at: 0)
-        save()
-    }
-    func deleteProject(_ project: Project) {
-        projects.removeAll { $0.id == project.id }
-        save()
-    }
+    func addProject(name: String) { projects.insert(Project(name: name), at: 0); save() }
+    func deleteProject(_ p: Project) { projects.removeAll { $0.id == p.id }; save() }
 
-    // Chats
-    func addChat(to projectID: UUID, title: String, providerID: UUID?) -> Chat? {
+    func addChat(to projectID: UUID, title: String, selection: ModelSelection?) -> Chat? {
         guard let i = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
-        let chat = Chat(title: title, providerID: providerID)
+        let chat = Chat(title: title, selection: selection)
         projects[i].chats.insert(chat, at: 0)
         save()
         return chat
     }
 
-    func appendMessage(_ message: Message, projectID: UUID, chatID: UUID) {
+    func setSelection(_ sel: ModelSelection, projectID: UUID, chatID: UUID) {
         guard let p = projects.firstIndex(where: { $0.id == projectID }),
               let c = projects[p].chats.firstIndex(where: { $0.id == chatID }) else { return }
-        projects[p].chats[c].messages.append(message)
+        projects[p].chats[c].selection = sel
+        save()
+    }
+
+    func appendMessage(_ m: Message, projectID: UUID, chatID: UUID) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }),
+              let c = projects[p].chats.firstIndex(where: { $0.id == chatID }) else { return }
+        projects[p].chats[c].messages.append(m)
         save()
     }
 
     func updateLastAssistantMessage(_ text: String, projectID: UUID, chatID: UUID) {
         guard let p = projects.firstIndex(where: { $0.id == projectID }),
               let c = projects[p].chats.firstIndex(where: { $0.id == chatID }),
-              let m = projects[p].chats[c].messages.lastIndex(where: { $0.role == .assistant })
-        else { return }
+              let m = projects[p].chats[c].messages.lastIndex(where: { $0.role == .assistant }) else { return }
         projects[p].chats[c].messages[m].content = text
     }
 
@@ -65,73 +62,101 @@ final class AppStore: ObservableObject {
     }
 }
 
-/// Stores AI providers and which one is the default.
+/// Stores AI providers, theme, and app settings.
 @MainActor
 final class SettingsStore: ObservableObject {
     @Published var providers: [AIProvider] = []
+    @Published var theme: AppTheme {
+        didSet { UserDefaults.standard.set(theme.rawValue, forKey: "theme") }
+    }
+    @Published var accent: AccentTheme {
+        didSet { UserDefaults.standard.set(accent.rawValue, forKey: "accent") }
+    }
+    @Published var systemPrompt: String {
+        didSet { UserDefaults.standard.set(systemPrompt, forKey: "system_prompt") }
+    }
+    @Published var useCodexModels: Bool {
+        didSet { UserDefaults.standard.set(useCodexModels, forKey: "use_codex_models") }
+    }
 
     private let key = "ai_providers"
 
-    init() { load() }
+    init() {
+        theme = AppTheme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .volt
+        accent = AccentTheme(rawValue: UserDefaults.standard.string(forKey: "accent") ?? "") ?? .volt
+        systemPrompt = UserDefaults.standard.string(forKey: "system_prompt")
+            ?? "Ты — Codex, помощник-программист в приложении OpenVolt. Когда создаёшь файлы, оборачивай их в блоки ```язык и указывай имя файла комментарием // file: имя в первой строке."
+        useCodexModels = UserDefaults.standard.object(forKey: "use_codex_models") as? Bool ?? true
+        loadProviders()
+    }
 
-    func load() {
+    func loadProviders() {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode([AIProvider].self, from: data),
               !decoded.isEmpty else {
-            providers = [AIProvider.makeOpenAI()]
-            save()
+            providers = []
             return
         }
         providers = decoded
     }
-
     func save() {
-        if let data = try? JSONEncoder().encode(providers) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        if let data = try? JSONEncoder().encode(providers) { UserDefaults.standard.set(data, forKey: key) }
     }
 
-    func add(_ provider: AIProvider, apiKey: String) {
-        var p = provider
+    func add(_ p: AIProvider, apiKey: String) {
+        var p = p
         if providers.isEmpty { p.isDefault = true }
         KeychainService.set(apiKey, for: p.apiKeyRef)
-        providers.append(p)
+        providers.append(p); save()
+    }
+    func update(_ p: AIProvider, apiKey: String?) {
+        guard let i = providers.firstIndex(where: { $0.id == p.id }) else { return }
+        providers[i] = p
+        if let apiKey, !apiKey.isEmpty { KeychainService.set(apiKey, for: p.apiKeyRef) }
         save()
     }
-
-    func update(_ provider: AIProvider, apiKey: String?) {
-        guard let i = providers.firstIndex(where: { $0.id == provider.id }) else { return }
-        providers[i] = provider
-        if let apiKey { KeychainService.set(apiKey, for: provider.apiKeyRef) }
+    func delete(_ p: AIProvider) {
+        KeychainService.delete(p.apiKeyRef)
+        providers.removeAll { $0.id == p.id }
+        if !providers.contains(where: { $0.isDefault }), let f = providers.first { setDefault(f) }
         save()
     }
+    func setDefault(_ p: AIProvider) {
+        for i in providers.indices { providers[i].isDefault = (providers[i].id == p.id) }
+        save()
+    }
+    var defaultProvider: AIProvider? { providers.first(where: { $0.isDefault }) ?? providers.first }
 
-    func delete(_ provider: AIProvider) {
-        KeychainService.delete(provider.apiKeyRef)
-        providers.removeAll { $0.id == provider.id }
-        if !providers.contains(where: { $0.isDefault }), let first = providers.first {
-            setDefault(first)
+    /// All selectable models for the chat picker.
+    func availableSelections(codexLoggedIn: Bool) -> [ModelSelection] {
+        var out: [ModelSelection] = []
+        for p in providers {
+            for m in p.models {
+                out.append(ModelSelection(source: .api, providerID: p.id, model: m,
+                                          displayName: "\(p.name) · \(m)"))
+            }
         }
-        save()
+        if useCodexModels && codexLoggedIn {
+            out.append(.codex("gpt-5-codex"))
+            out.append(.codex("codex-mini"))
+        }
+        return out
     }
 
-    func setDefault(_ provider: AIProvider) {
-        for i in providers.indices { providers[i].isDefault = (providers[i].id == provider.id) }
-        save()
-    }
-
-    var defaultProvider: AIProvider? {
-        providers.first(where: { $0.isDefault }) ?? providers.first
+    func provider(for id: UUID?) -> AIProvider? {
+        providers.first(where: { $0.id == id })
     }
 }
 
-/// Tracks Codex web login state.
+/// Codex web login state.
 @MainActor
 final class SessionStore: ObservableObject {
     @Published var isCodexLoggedIn: Bool {
         didSet { UserDefaults.standard.set(isCodexLoggedIn, forKey: "codex_logged_in") }
     }
-    init() {
-        isCodexLoggedIn = UserDefaults.standard.bool(forKey: "codex_logged_in")
+    init() { isCodexLoggedIn = UserDefaults.standard.bool(forKey: "codex_logged_in") }
+    func logout() {
+        isCodexLoggedIn = false
+        CodexWebSession.clearCookies()
     }
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct CodexMobileApp: App {
+struct OpenVoltApp: App {
     @StateObject private var appStore = AppStore()
     @StateObject private var settings = SettingsStore()
     @StateObject private var session = SessionStore()
@@ -12,7 +12,8 @@ struct CodexMobileApp: App {
                 .environmentObject(appStore)
                 .environmentObject(settings)
                 .environmentObject(session)
-                .preferredColorScheme(.dark)
+                .tint(settings.accent.color)
+                .preferredColorScheme(settings.theme.colorScheme)
         }
     }
 }
