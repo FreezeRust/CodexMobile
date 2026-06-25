@@ -61,11 +61,14 @@ struct ChatView: View {
         }
         .navigationTitle(chat?.title ?? "Чат")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                if let p = provider {
-                    Text(p.model).font(.caption2).foregroundStyle(.secondary)
-                }
+        .toolbar { toolbarContent }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            if let p = provider {
+                Text(p.model).font(.caption2).foregroundStyle(.secondary)
             }
         }
     }

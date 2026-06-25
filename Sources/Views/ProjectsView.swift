@@ -37,11 +37,7 @@ struct ProjectsView: View {
                     ProjectDetailView(projectID: project.id)
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showingNew = true } label: { Image(systemName: "plus") }
-                }
-            }
+            .toolbar { toolbarContent }
             .alert("Новый проект", isPresented: $showingNew) {
                 TextField("Название проекта", text: $newName)
                 Button("Создать") {
@@ -51,6 +47,13 @@ struct ProjectsView: View {
                 }
                 Button("Отмена", role: .cancel) { newName = "" }
             }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button { showingNew = true } label: { Image(systemName: "plus") }
         }
     }
 }
