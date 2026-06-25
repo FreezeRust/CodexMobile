@@ -40,7 +40,7 @@ struct SettingsView: View {
             }
             .navigationTitle("Нейросети")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showingNew = true } label: { Image(systemName: "plus") }
                 }
             }

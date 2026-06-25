@@ -38,7 +38,7 @@ struct ProjectsView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showingNew = true } label: { Image(systemName: "plus") }
                 }
             }

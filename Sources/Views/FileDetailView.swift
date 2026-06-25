@@ -18,7 +18,7 @@ struct FileDetailView: View {
         .navigationTitle(file.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     export()
                 } label: { Image(systemName: "square.and.arrow.up") }

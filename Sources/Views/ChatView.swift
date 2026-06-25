@@ -62,7 +62,7 @@ struct ChatView: View {
         .navigationTitle(chat?.title ?? "Чат")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 if let p = provider {
                     Text(p.model).font(.caption2).foregroundStyle(.secondary)
                 }

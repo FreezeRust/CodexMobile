@@ -47,7 +47,7 @@ struct ProjectDetailView: View {
         }
         .navigationTitle(project?.name ?? "Проект")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button { showingNewChat = true } label: {
                     Image(systemName: "plus.bubble")
                 }
