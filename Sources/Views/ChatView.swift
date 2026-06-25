@@ -40,6 +40,7 @@ struct ChatView: View {
         .navigationTitle(chat?.title ?? "Чат")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .codexVerificationOverlay()
         .sheet(isPresented: $showModelPicker) { modelPicker }
         .onChange(of: photoItems) { _, items in Task { await loadPhotos(items) } }
         .fileImporter(isPresented: $showFileImporter,
@@ -294,6 +295,11 @@ struct ChatView: View {
             for try await token in client.stream(messages: history) {
                 acc += token
                 store.updateLastAssistantMessage(acc, projectID: projectID, chatID: chatID)
+            }
+            if acc.isEmpty {
+                store.updateLastAssistantMessage(
+                    "⚠️ Пустой ответ от API. Проверь модель «\(sel.model)», Base URL и ключ в «Настройки → Нейросети».",
+                    projectID: projectID, chatID: chatID)
             }
             store.save()
             let files = CodeExtractor.extract(from: acc)

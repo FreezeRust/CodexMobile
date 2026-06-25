@@ -1,65 +1,140 @@
 import Foundation
 import WebKit
+import UIKit
 
-/// Drives the logged-in Codex/ChatGPT web session headlessly to run a prompt
-/// and capture the answer back into OpenVolt's native chat.
-///
-/// NOTE: This automates the web UI (the only way to use a Codex *account* without
-/// an API key). It depends on ChatGPT's DOM and may need selector updates over time.
+/// Shared desktop-class user agent so Codex shows the full PC login/confirmation flow.
+let kCodexUserAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+    "(KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+/// Drives the logged-in Codex/ChatGPT web session to run prompts and capture answers
+/// into OpenVolt's native chat. When a bot check appears, it surfaces a small
+/// verification window instead of a full page.
 @MainActor
 final class CodexBridge: NSObject, ObservableObject {
     static let shared = CodexBridge()
 
-    private var webView: WKWebView?
-    private var ready = false
+    /// The single web view shared with the login session (same cookie store).
+    let webView: WKWebView
+
+    /// When true, the UI should present the small "verify you are human" window.
+    @Published var needsVerification = false
+    /// Human-readable status for nice UI feedback.
+    @Published var status: String = ""
+
+    private var prepared = false
+
+    private override init() {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()       // shares logged-in cookies
+        config.allowsInlineMediaPlayback = true
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
+        webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
+        super.init()
+        webView.customUserAgent = kCodexUserAgent
+        // Keep it alive & processing while off-screen by parking it in the key window.
+        parkOffscreen()
+    }
 
     enum BridgeError: LocalizedError {
-        case notLoggedIn, timeout, noResponse
+        case notLoggedIn, timeout, noInput
         var errorDescription: String? {
             switch self {
-            case .notLoggedIn: return "Нет активной сессии Codex. Войди в «Настройки → Codex»."
+            case .notLoggedIn: return "Нужно войти в Codex. Открой «Настройки → Codex»."
             case .timeout:     return "Codex не ответил вовремя. Попробуй ещё раз."
-            case .noResponse:  return "Не удалось получить ответ из Codex."
+            case .noInput:     return "Не удалось найти поле ввода Codex."
             }
         }
     }
 
-    /// Build/reuse a hidden web view that shares cookies with the login session.
-    private func ensureWebView() -> WKWebView {
-        if let w = webView { return w }
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default()        // shares the logged-in cookies
-        let w = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
-        w.customUserAgent =
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
-            "(KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-        webView = w
-        return w
-    }
+    // MARK: - Lifecycle
 
-    /// Ensure the chat page is loaded and ready.
-    private func loadIfNeeded() async throws {
-        let w = ensureWebView()
-        if ready, let url = w.url?.absoluteString, url.contains("chatgpt.com") { return }
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            let delegate = LoadDelegate { result in cont.resume(with: result) }
-            self.loadDelegate = delegate
-            w.navigationDelegate = delegate
-            w.load(URLRequest(url: URL(string: "https://chatgpt.com/")!))
+    /// Park the web view as a tiny, near-invisible subview of the key window so
+    /// the page keeps running (and challenges can complete) even when not shown.
+    private func parkOffscreen() {
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene }).first?.keyWindow else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.parkOffscreen() }
+            return
         }
-        ready = true
-        // small settle delay for SPA hydration
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        webView.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        webView.alpha = 0.02
+        webView.isUserInteractionEnabled = false
+        if webView.superview == nil { window.addSubview(webView) }
     }
 
+    /// Load chatgpt.com once.
+    func prepare() async {
+        if webView.superview == nil { parkOffscreen() }   // ensure it lives in the window
+        if prepared, let url = webView.url?.absoluteString, url.contains("chatgpt.com") { return }
+        await load(URLString: "https://chatgpt.com/")
+        prepared = true
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+    }
+
+    private func load(URLString: String) async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let d = LoadDelegate { cont.resume() }
+            self.loadDelegate = d
+            webView.navigationDelegate = d
+            webView.load(URLRequest(url: URL(string: URLString)!))
+        }
+    }
     private var loadDelegate: LoadDelegate?
 
-    /// Sends a prompt through Codex and streams the answer via the callback.
-    func send(prompt: String, onUpdate: @escaping (String) -> Void) async throws {
-        try await loadIfNeeded()
-        guard let w = webView else { throw BridgeError.noResponse }
+    // MARK: - Page state probe
 
-        // 1) inject the prompt into the composer and submit
+    enum PageState: String { case ready = "READY", challenge = "CHALLENGE", login = "LOGIN", loading = "LOADING" }
+
+    private let probeJS = """
+    (function(){
+      try {
+        if (document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], #challenge-stage, #cf-challenge-running, [id^="cf-chl"]')) return 'CHALLENGE';
+        var t = (document.body && document.body.innerText) ? document.body.innerText : '';
+        if (/verify you are human|подтвердите, что вы человек|are you human|проверка безопасности/i.test(t)) return 'CHALLENGE';
+        var href = location.href;
+        if (href.indexOf('/auth')>-1 || href.indexOf('login')>-1 || document.querySelector('input[type=password]')) return 'LOGIN';
+        if (document.querySelector('#prompt-textarea, textarea, div[contenteditable="true"]')) return 'READY';
+        return 'LOADING';
+      } catch(e){ return 'LOADING'; }
+    })();
+    """
+
+    private func probe() async -> PageState {
+        let v = (try? await eval(probeJS)) as? String ?? "LOADING"
+        return PageState(rawValue: v) ?? .loading
+    }
+
+    /// Wait until the composer is ready. Surfaces the verification window if a
+    /// bot check appears, and resolves once the user passes it.
+    private func waitUntilReady(timeout: TimeInterval = 90) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            switch await probe() {
+            case .ready:
+                if needsVerification { needsVerification = false; parkOffscreen() }
+                status = ""
+                return
+            case .challenge:
+                status = "Нужна проверка, что ты не робот"
+                needsVerification = true       // -> UI shows the small window
+            case .login:
+                needsVerification = false
+                throw BridgeError.notLoggedIn
+            case .loading:
+                status = "Загрузка Codex…"
+            }
+            try await Task.sleep(nanoseconds: 600_000_000)
+        }
+        throw BridgeError.timeout
+    }
+
+    // MARK: - Send a prompt
+
+    func send(prompt: String, onUpdate: @escaping (String) -> Void) async throws {
+        await prepare()
+        try await waitUntilReady()
+
         let escaped = prompt
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "`", with: "\\`")
@@ -79,25 +154,21 @@ final class CodexBridge: NSObject, ObservableObject {
             document.execCommand('insertText', false, text);
             ta.dispatchEvent(new Event('input', {bubbles:true}));
           }
-          // try to click the send button
           setTimeout(() => {
             const btn = document.querySelector('button[data-testid="send-button"], button[aria-label*="Send"], button[aria-label*="Отправить"]');
-            if (btn) btn.click();
+            if (btn && !btn.disabled) btn.click();
             else {
               const ev = new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true});
               ta.dispatchEvent(ev);
             }
-          }, 150);
+          }, 200);
           return 'OK';
         })();
         """
+        status = "Отправляю запрос через Codex…"
+        let r = try await eval(injectJS)
+        if (r as? String) == "NO_INPUT" { throw BridgeError.noInput }
 
-        let result = try await eval(w, injectJS)
-        if (result as? String) == "NO_INPUT" {
-            throw BridgeError.notLoggedIn   // composer not present => not authenticated
-        }
-
-        // 2) poll the DOM for the latest assistant message until it stops growing
         let readJS = """
         (function() {
           const nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
@@ -107,42 +178,46 @@ final class CodexBridge: NSObject, ObservableObject {
         """
 
         var last = ""
-        var stableCount = 0
-        for _ in 0..<120 {   // up to ~60s
+        var stable = 0
+        status = "Codex думает…"
+        for _ in 0..<160 {                 // up to ~80s
             try await Task.sleep(nanoseconds: 500_000_000)
-            let current = (try? await eval(w, readJS)) as? String ?? ""
-            if current != last {
-                last = current
-                stableCount = 0
-                if !current.isEmpty { onUpdate(current) }
-            } else if !current.isEmpty {
-                stableCount += 1
-                if stableCount >= 4 { break }   // ~2s unchanged => done
+            // a challenge can appear mid-stream too
+            if await probe() == .challenge { try await waitUntilReady() }
+            let cur = (try? await eval(readJS)) as? String ?? ""
+            if cur != last {
+                last = cur; stable = 0
+                if !cur.isEmpty { onUpdate(cur) }
+            } else if !cur.isEmpty {
+                stable += 1
+                if stable >= 5 { break }    // ~2.5s unchanged => finished
             }
         }
+        status = ""
         if last.isEmpty { throw BridgeError.timeout }
     }
 
-    private func eval(_ w: WKWebView, _ js: String) async throws -> Any? {
+    private func eval(_ js: String) async throws -> Any? {
         try await withCheckedThrowingContinuation { cont in
-            w.evaluateJavaScript(js) { value, error in
-                if let error { cont.resume(throwing: error) } else { cont.resume(returning: value) }
+            webView.evaluateJavaScript(js) { v, e in
+                if let e { cont.resume(throwing: e) } else { cont.resume(returning: v) }
             }
         }
     }
 
-    func reset() { ready = false; webView = nil }
+    func reset() {
+        prepared = false
+        CodexWebSession.clearCookies()
+        webView.load(URLRequest(url: URL(string: "about:blank")!))
+    }
 
-    // Internal load delegate
     private final class LoadDelegate: NSObject, WKNavigationDelegate {
-        let done: (Result<Void, Error>) -> Void
-        private var finished = false
-        init(done: @escaping (Result<Void, Error>) -> Void) { self.done = done }
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard !finished else { return }; finished = true; done(.success(()))
-        }
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            guard !finished else { return }; finished = true; done(.failure(error))
-        }
+        let done: () -> Void
+        private var fired = false
+        init(done: @escaping () -> Void) { self.done = done }
+        func webView(_ w: WKWebView, didFinish n: WKNavigation!) { fire() }
+        func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) { fire() }
+        func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) { fire() }
+        private func fire() { guard !fired else { return }; fired = true; done() }
     }
 }
