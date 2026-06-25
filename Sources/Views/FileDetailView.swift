@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 struct FileDetailView: View {
     @EnvironmentObject var settings: SettingsStore
@@ -12,9 +13,15 @@ struct FileDetailView: View {
     @State private var exportedURL: URL?
     @State private var showRename = false
     @State private var renameText = ""
+    @State private var showHistory = false
+    @State private var showPreview = false
 
     private var file: GeneratedFile? {
         store.project(projectID)?.files.first(where: { $0.id == fileID })
+    }
+    private var isHTML: Bool {
+        let n = file?.name.lowercased() ?? ""
+        return n.hasSuffix(".html") || n.hasSuffix(".htm") || (file?.language.lowercased() == "html")
     }
 
     var body: some View {
@@ -28,13 +35,7 @@ struct FileDetailView: View {
                         .scrollContentBackground(.hidden)
                         .background(settings.cardColor ?? Color(.secondarySystemBackground))
                 } else {
-                    ScrollView([.vertical, .horizontal]) {
-                        Text(file?.content ?? "")
-                            .font(.system(.footnote, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                    }
+                    CodeWithLineNumbers(content: file?.content ?? "")
                 }
             }
         }
@@ -42,6 +43,12 @@ struct FileDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .sheet(isPresented: $showShare) { if let exportedURL { ShareSheet(items: [exportedURL]) } }
+        .sheet(isPresented: $showHistory) {
+            if let file { FileHistoryView(projectID: projectID, fileID: fileID, file: file) }
+        }
+        .sheet(isPresented: $showPreview) {
+            if let file { HTMLPreviewSheet(html: file.content, title: file.name) }
+        }
         .alert("Переименовать файл", isPresented: $showRename) {
             TextField("Имя файла", text: $renameText)
             Button("Сохранить") {
@@ -66,6 +73,12 @@ struct FileDetailView: View {
                     Button { draft = file?.content ?? ""; isEditing = true } label: {
                         Label("Редактировать", systemImage: "pencil")
                     }
+                    if isHTML {
+                        Button { showPreview = true } label: { Label("Предпросмотр HTML", systemImage: "safari") }
+                    }
+                    Button { showHistory = true } label: {
+                        Label("История изменений (\(file?.history.count ?? 0))", systemImage: "clock.arrow.circlepath")
+                    }
                     Button { renameText = file?.name ?? ""; showRename = true } label: {
                         Label("Переименовать", systemImage: "character.cursor.ibeam")
                     }
@@ -86,6 +99,142 @@ struct FileDetailView: View {
             try file.content.data(using: .utf8)?.write(to: url, options: .atomic)
             exportedURL = url; showShare = true
         } catch { print("Export failed: \(error)") }
+    }
+}
+
+// MARK: - Code with line numbers
+
+struct CodeWithLineNumbers: View {
+    let content: String
+    private var lines: [String] {
+        content.isEmpty ? [""] : content.components(separatedBy: "\n")
+    }
+    var body: some View {
+        ScrollView([.vertical, .horizontal]) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .trailing, spacing: 0) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { i, _ in
+                        Text("\(i + 1)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary.opacity(0.5))
+                    }
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line.isEmpty ? " " : line)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+// MARK: - HTML preview
+
+struct HTMLPreviewSheet: View {
+    @Environment(\.dismiss) var dismiss
+    let html: String
+    let title: String
+
+    var body: some View {
+        NavigationStack {
+            HTMLWebView(html: html)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Закрыть") { dismiss() } }
+                }
+        }
+    }
+}
+
+struct HTMLWebView: UIViewRepresentable {
+    let html: String
+    func makeUIView(context: Context) -> WKWebView {
+        let web = WKWebView()
+        web.isOpaque = false
+        return web
+    }
+    func updateUIView(_ web: WKWebView, context: Context) {
+        web.loadHTMLString(html, baseURL: nil)
+    }
+}
+
+// MARK: - File history
+
+struct FileHistoryView: View {
+    @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) var dismiss
+    let projectID: UUID
+    let fileID: UUID
+    let file: GeneratedFile
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                if let bg = settings.bgColor { bg.ignoresSafeArea() }
+                if file.history.isEmpty {
+                    ContentUnavailableView("Нет истории", systemImage: "clock",
+                        description: Text("Версии появятся после правок файла."))
+                } else {
+                    List {
+                        Section("Текущая версия") {
+                            Text("\(file.content.components(separatedBy: "\n").count) строк")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Section("Предыдущие версии") {
+                            ForEach(file.history) { v in
+                                NavigationLink {
+                                    VersionDetail(projectID: projectID, fileID: fileID, version: v)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(v.note.isEmpty ? "Версия" : v.note).font(.subheadline)
+                                        Text(v.savedAt.formatted(date: .abbreviated, time: .shortened))
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .scrollContentBackground(settings.bgColor == nil ? .visible : .hidden)
+                }
+            }
+            .navigationTitle("История")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрыть") { dismiss() } } }
+        }
+    }
+}
+
+struct VersionDetail: View {
+    @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) var dismiss
+    let projectID: UUID
+    let fileID: UUID
+    let version: FileVersion
+
+    var body: some View {
+        ZStack {
+            if let bg = settings.bgColor { bg.ignoresSafeArea() }
+            CodeWithLineNumbers(content: version.content)
+        }
+        .navigationTitle(version.savedAt.formatted(date: .abbreviated, time: .shortened))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    store.restoreFileVersion(fileID, versionID: version.id, projectID: projectID)
+                    dismiss()
+                } label: { Label("Откатить", systemImage: "arrow.uturn.backward") }
+            }
+        }
     }
 }
 

@@ -394,20 +394,29 @@ struct TypingAnimationPicker: View {
                     .padding(.horizontal)
 
                     List {
-                        ForEach(TypingAnimation.allCases) { anim in
-                            Button {
-                                settings.typingAnimation = anim
-                                previewID = UUID()
-                            } label: {
-                                HStack {
-                                    Image(systemName: anim.icon).foregroundStyle(settings.accentColor).frame(width: 28)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(anim.title).foregroundStyle(.primary)
-                                        Text(anim.subtitle).font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if settings.typingAnimation == anim {
-                                        Image(systemName: "checkmark.circle.fill").foregroundStyle(settings.accentColor)
+                        Section("Скорость") {
+                            Picker("Скорость", selection: $settings.typingSpeed) {
+                                ForEach(TypingSpeed.allCases) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .onChange(of: settings.typingSpeed) { _, _ in previewID = UUID() }
+                        }
+                        Section("Стиль") {
+                            ForEach(TypingAnimation.allCases) { anim in
+                                Button {
+                                    settings.typingAnimation = anim
+                                    previewID = UUID()
+                                } label: {
+                                    HStack {
+                                        Image(systemName: anim.icon).foregroundStyle(settings.accentColor).frame(width: 28)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(anim.title).foregroundStyle(.primary)
+                                            Text(anim.subtitle).font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        if settings.typingAnimation == anim {
+                                            Image(systemName: "checkmark.circle.fill").foregroundStyle(settings.accentColor)
+                                        }
                                     }
                                 }
                             }

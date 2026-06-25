@@ -68,14 +68,64 @@ final class AppStore: ObservableObject {
     func setPollAnswer(_ option: String, messageID: UUID, projectID: UUID, chatID: UUID) {
         updateMessage(messageID, projectID: projectID, chatID: chatID) { $0.poll?.selected = option }
     }
+    func confirmPoll(messageID: UUID, projectID: UUID, chatID: UUID) {
+        updateMessage(messageID, projectID: projectID, chatID: chatID) { $0.poll?.confirmed = true }
+    }
 
     // MARK: - File editing
 
-    func updateFile(_ id: UUID, projectID: UUID, content: String) {
+    func updateFile(_ id: UUID, projectID: UUID, content: String, note: String = "ручная правка") {
         guard let p = projects.firstIndex(where: { $0.id == projectID }),
               let f = projects[p].files.firstIndex(where: { $0.id == id }) else { return }
+        let old = projects[p].files[f].content
+        if old != content {
+            // snapshot previous content into history (newest first)
+            projects[p].files[f].history.insert(FileVersion(content: old, note: note), at: 0)
+            if projects[p].files[f].history.count > 50 { projects[p].files[f].history.removeLast() }
+        }
         projects[p].files[f].content = content
         save()
+    }
+
+    func restoreFileVersion(_ fileID: UUID, versionID: UUID, projectID: UUID) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }),
+              let f = projects[p].files.firstIndex(where: { $0.id == fileID }),
+              let v = projects[p].files[f].history.first(where: { $0.id == versionID }) else { return }
+        let current = projects[p].files[f].content
+        projects[p].files[f].history.insert(FileVersion(content: current, note: "перед откатом"), at: 0)
+        projects[p].files[f].content = v.content
+        save()
+    }
+
+    // MARK: - Skills & instructions
+
+    func addSkill(_ skill: Skill, projectID: UUID) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        projects[p].skills.append(skill); save()
+    }
+    func updateSkill(_ skill: Skill, projectID: UUID) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }),
+              let s = projects[p].skills.firstIndex(where: { $0.id == skill.id }) else { return }
+        projects[p].skills[s] = skill; save()
+    }
+    func deleteSkill(_ id: UUID, projectID: UUID) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        projects[p].skills.removeAll { $0.id == id }; save()
+    }
+    func setInstructions(_ text: String, projectID: UUID) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        projects[p].instructions = text; save()
+    }
+
+    // MARK: - Agent tasks
+
+    func setTasks(_ tasks: [AgentTask], messageID: UUID, projectID: UUID, chatID: UUID) {
+        updateMessage(messageID, projectID: projectID, chatID: chatID) { $0.tasks = tasks }
+    }
+    func setTaskStatus(_ status: AgentTask.Status, taskID: UUID, messageID: UUID, projectID: UUID, chatID: UUID) {
+        updateMessage(messageID, projectID: projectID, chatID: chatID) {
+            if let i = $0.tasks.firstIndex(where: { $0.id == taskID }) { $0.tasks[i].status = status }
+        }
     }
     func renameFile(_ id: UUID, projectID: UUID, name: String) {
         guard let p = projects.firstIndex(where: { $0.id == projectID }),
@@ -119,6 +169,9 @@ final class SettingsStore: ObservableObject {
     @Published var typingAnimation: TypingAnimation {
         didSet { UserDefaults.standard.set(typingAnimation.rawValue, forKey: "typing_anim") }
     }
+    @Published var typingSpeed: TypingSpeed {
+        didSet { UserDefaults.standard.set(typingSpeed.rawValue, forKey: "typing_speed") }
+    }
     // Custom theme colors (hex strings)
     @Published var customAccentHex: String {
         didSet { UserDefaults.standard.set(customAccentHex, forKey: "custom_accent") }
@@ -139,12 +192,18 @@ final class SettingsStore: ObservableObject {
         theme = AppTheme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .volt
         accent = AccentTheme(rawValue: UserDefaults.standard.string(forKey: "accent") ?? "") ?? .volt
         systemPrompt = UserDefaults.standard.string(forKey: "system_prompt")
-            ?? "Ты — помощник-программист в приложении OpenVolt. Когда создаёшь файл, ВСЕГДА оборачивай его в блок ```язык и первой строкой ставь комментарий с именем файла, например // file: calculator.html — тогда пользователь увидит карточку «Создание calculator.html». Используй markdown: заголовки #, списки -, **жирный**. Если уместно задать вопрос с вариантами, выведи блок ```poll с JSON {\"question\":\"...\",\"options\":[\"A\",\"B\"]}."
+            ?? """
+            Ты — помощник-программист в приложении OpenVolt. Используй markdown: заголовки #, списки -, **жирный**.
+            Когда создаёшь файл, ВСЕГДА оборачивай его в блок с указанием языка и первой строкой ставь комментарий с именем файла, например // file: calculator.html — тогда пользователь увидит карточку «Создание calculator.html».
+            Опрос: если нужно уточнить выбор у пользователя, выведи блок ```poll с JSON {"question":"...","options":["A","B"]}. ВАЖНО: после опроса ОСТАНОВИСЬ и жди ответ пользователя — не продолжай, пока он не подтвердит выбор. Когда пользователь пришлёт «Выбран вариант: X», продолжай с учётом этого.
+            Задачи: для сложного запроса сначала составь план в блоке ```tasks с JSON-массивом строк, например ["Создать HTML","Добавить CSS","Написать JS"]. Затем выполняй задачи по очереди.
+            """
         customAccentHex = UserDefaults.standard.string(forKey: "custom_accent") ?? "#6B55F4"
         customBackgroundHex = UserDefaults.standard.string(forKey: "custom_bg") ?? "#0D0A1F"
         customCardHex = UserDefaults.standard.string(forKey: "custom_card") ?? "#1A1430"
         customIsDark = UserDefaults.standard.object(forKey: "custom_dark") as? Bool ?? true
         typingAnimation = TypingAnimation(rawValue: UserDefaults.standard.string(forKey: "typing_anim") ?? "") ?? .character
+        typingSpeed = TypingSpeed(rawValue: UserDefaults.standard.string(forKey: "typing_speed") ?? "") ?? .normal
         loadProviders()
     }
 

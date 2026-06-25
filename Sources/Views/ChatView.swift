@@ -85,6 +85,10 @@ struct ChatView: View {
                             onPollAnswer: { opt in
                                 store.setPollAnswer(opt, messageID: msg.id, projectID: projectID, chatID: chatID)
                             },
+                            onPollConfirm: { opt in
+                                store.confirmPoll(messageID: msg.id, projectID: projectID, chatID: chatID)
+                                Task { await sendPollChoice(opt) }
+                            },
                             onSaveImage: { att in saveImageAsFile(att) },
                             onOpenCode: { name, lang, content in
                                 codeViewer = CodeViewerData(name: name, language: lang, content: content)
@@ -321,6 +325,34 @@ struct ChatView: View {
         chat?.messages.last(where: { $0.role == .assistant })?.id ?? UUID()
     }
 
+    // MARK: - System message (prompt + project instructions + skills)
+
+    private func buildSystemMessage() -> Message {
+        var parts: [String] = []
+        if !settings.systemPrompt.isEmpty { parts.append(settings.systemPrompt) }
+        if let project = store.project(projectID) {
+            if !project.instructions.trimmingCharacters(in: .whitespaces).isEmpty {
+                parts.append("Инструкции проекта:\n\(project.instructions)")
+            }
+            let skills = project.skills.filter { $0.enabled }
+            if !skills.isEmpty {
+                let list = skills.map { "• \($0.name): \($0.detail)" }.joined(separator: "\n")
+                parts.append("Доступные навыки (используй при необходимости):\n\(list)")
+            }
+            if !project.files.isEmpty {
+                let names = project.files.prefix(20).map { $0.name }.joined(separator: ", ")
+                parts.append("Файлы проекта: \(names)")
+            }
+        }
+        return Message(role: .system, content: parts.joined(separator: "\n\n"))
+    }
+
+    private func conversationHistory() -> [Message] {
+        var history: [Message] = [buildSystemMessage()]
+        history += (chat?.messages.filter { !($0.role == .assistant && $0.content.isEmpty) } ?? [])
+        return history
+    }
+
     // MARK: - Send
 
     @MainActor private func send() async {
@@ -339,29 +371,36 @@ struct ChatView: View {
 
         store.appendMessage(Message(role: .user, content: text, attachments: atts, quoted: quote),
                             projectID: projectID, chatID: chatID)
-        store.appendMessage(Message(role: .assistant, content: ""),
-                            projectID: projectID, chatID: chatID)
+        await runAssistantTurn(selection: sel)
+    }
 
+    /// Sends the confirmed poll choice back to the AI so it continues.
+    @MainActor private func sendPollChoice(_ choice: String) async {
+        guard let sel = chat?.selection else { return }
+        store.appendMessage(Message(role: .user, content: "Выбран вариант: \(choice)"),
+                            projectID: projectID, chatID: chatID)
+        await runAssistantTurn(selection: sel)
+    }
+
+    /// One assistant reply turn: streams, then parses poll/tasks/image/files.
+    @MainActor private func runAssistantTurn(selection sel: ModelSelection) async {
         guard let provider = settings.provider(for: sel.providerID) else {
-            store.updateLastAssistantMessage("⚠️ Провайдер не найден. Открой «Настройки → Нейросети».",
-                                             projectID: projectID, chatID: chatID)
-            store.save(); return
+            store.appendMessage(Message(role: .assistant,
+                content: "⚠️ Провайдер не найден. Открой «Настройки → Нейросети»."),
+                projectID: projectID, chatID: chatID)
+            return
         }
+        store.appendMessage(Message(role: .assistant, content: ""), projectID: projectID, chatID: chatID)
+        let aid = currentAssistantID()
 
         isStreaming = true
-        streamingMessageID = currentAssistantID()
+        streamingMessageID = aid
         defer { isStreaming = false; streamingMessageID = nil }
-
-        var history: [Message] = []
-        if !settings.systemPrompt.isEmpty {
-            history.append(Message(role: .system, content: settings.systemPrompt))
-        }
-        history += (chat?.messages.filter { !($0.role == .assistant && $0.content.isEmpty) } ?? [])
 
         let client = AIClient(provider: provider, model: sel.model)
         var acc = ""
         do {
-            for try await token in client.stream(messages: history) {
+            for try await token in client.stream(messages: conversationHistory()) {
                 acc += token
                 store.updateLastAssistantMessage(acc, projectID: projectID, chatID: chatID)
             }
@@ -370,32 +409,91 @@ struct ChatView: View {
                     "⚠️ Пустой ответ. Проверь модель «\(sel.model)», Base URL и ключ.",
                     projectID: projectID, chatID: chatID)
             }
-            // Parse poll / image requests
-            let aid = currentAssistantID()
-            if let poll = ResponseParser.extractPoll(from: acc) {
-                store.updateMessage(aid, projectID: projectID, chatID: chatID) {
-                    $0.poll = poll
-                    $0.content = ResponseParser.stripControlBlocks(acc)
-                }
-            }
-            if let imgPrompt = ResponseParser.extractImagePrompt(from: acc), provider.supportsImages {
-                if let b64 = try? await client.generateImage(prompt: imgPrompt), !b64.isEmpty {
-                    let att = Attachment(kind: .image, fileName: "ai_image.png", mimeType: "image/png", base64: b64)
-                    store.updateMessage(aid, projectID: projectID, chatID: chatID) {
-                        $0.attachments.append(att)
-                        $0.content = ResponseParser.stripControlBlocks(acc)
-                    }
-                }
-            }
-            store.save()
-            let files = CodeExtractor.extract(from: acc)
-            if !files.isEmpty { store.attachFiles(files, projectID: projectID) }
+            await finalizeReply(acc, aid: aid, provider: provider, client: client)
         } catch {
             errorText = error.localizedDescription
             store.updateLastAssistantMessage(acc.isEmpty ? "⚠️ \(error.localizedDescription)" : acc,
                                              projectID: projectID, chatID: chatID)
             store.save()
         }
+    }
+
+    @MainActor private func finalizeReply(_ acc: String, aid: UUID,
+                                          provider: AIProvider, client: AIClient) async {
+        let poll = ResponseParser.extractPoll(from: acc)
+        let tasks = ResponseParser.extractTasks(from: acc)
+        let cleaned = ResponseParser.stripControlBlocks(acc)
+
+        store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+            $0.content = cleaned
+            if let poll { $0.poll = poll }
+            if let tasks { $0.tasks = tasks }
+        }
+
+        // Image generation if requested
+        if let imgPrompt = ResponseParser.extractImagePrompt(from: acc), provider.supportsImages {
+            if let b64 = try? await client.generateImage(prompt: imgPrompt), !b64.isEmpty {
+                let att = Attachment(kind: .image, fileName: "ai_image.png", mimeType: "image/png", base64: b64)
+                store.updateMessage(aid, projectID: projectID, chatID: chatID) { $0.attachments.append(att) }
+            }
+        }
+
+        // Save generated files (with history-aware updates)
+        let files = CodeExtractor.extract(from: acc)
+        for f in files { upsertFile(f) }
+        store.save()
+
+        // If the AI planned tasks, execute them one by one.
+        if let tasks, !tasks.isEmpty {
+            await executeTasks(tasks, messageID: aid)
+        }
+    }
+
+    /// Create or update a project file, keeping change history.
+    @MainActor private func upsertFile(_ file: GeneratedFile) {
+        if let existing = store.project(projectID)?.files.first(where: { $0.name == file.name }) {
+            store.updateFile(existing.id, projectID: projectID, content: file.content, note: "ИИ обновил")
+        } else {
+            store.attachFiles([file], projectID: projectID)
+        }
+    }
+
+    /// Runs AI-planned tasks sequentially: marks running → asks AI to do it → done.
+    @MainActor private func executeTasks(_ tasks: [AgentTask], messageID: UUID) async {
+        guard let sel = chat?.selection, let provider = settings.provider(for: sel.providerID) else { return }
+        let client = AIClient(provider: provider, model: sel.model)
+
+        for task in tasks {
+            store.setTaskStatus(.running, taskID: task.id, messageID: messageID, projectID: projectID, chatID: chatID)
+            store.appendMessage(Message(role: .assistant, content: "▶️ Выполняю: \(task.title)"),
+                                projectID: projectID, chatID: chatID)
+            let aid = currentAssistantID()
+            isStreaming = true; streamingMessageID = aid
+
+            var hist = conversationHistory()
+            hist.append(Message(role: .user,
+                content: "Выполни ТОЛЬКО эту задачу из плана: «\(task.title)». Дай результат (код в блоке с // file: если это файл). Не выводи блок tasks снова."))
+            var acc = ""
+            do {
+                for try await token in client.stream(messages: hist) {
+                    acc += token
+                    store.updateLastAssistantMessage(acc, projectID: projectID, chatID: chatID)
+                }
+                store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                    $0.content = ResponseParser.stripControlBlocks(acc)
+                }
+                for f in CodeExtractor.extract(from: acc) { upsertFile(f) }
+                store.setTaskStatus(.done, taskID: task.id, messageID: messageID, projectID: projectID, chatID: chatID)
+            } catch {
+                store.updateLastAssistantMessage("⚠️ \(error.localizedDescription)", projectID: projectID, chatID: chatID)
+                store.setTaskStatus(.failed, taskID: task.id, messageID: messageID, projectID: projectID, chatID: chatID)
+            }
+            isStreaming = false; streamingMessageID = nil
+            store.save()
+        }
+        store.appendMessage(Message(role: .assistant, content: "✅ Все задачи выполнены."),
+                            projectID: projectID, chatID: chatID)
+        store.save()
     }
 }
 
@@ -420,6 +518,7 @@ struct MessageBubble: View {
     var onCopy: () -> Void
     var onSelectText: () -> Void
     var onPollAnswer: (String) -> Void
+    var onPollConfirm: (String) -> Void
     var onSaveImage: (Attachment) -> Void
     var onOpenCode: (_ name: String, _ language: String, _ content: String) -> Void
 
@@ -440,8 +539,13 @@ struct MessageBubble: View {
                 }
                 attachmentsView
                 contentView
+                if !message.tasks.isEmpty {
+                    TaskChecklistView(tasks: message.tasks, accent: settings.accentColor)
+                }
                 if let poll = message.poll {
-                    PollView(poll: poll, accent: settings.accentColor) { onPollAnswer($0) }
+                    PollView(poll: poll, accent: settings.accentColor,
+                             onAnswer: { onPollAnswer($0) },
+                             onConfirm: { onPollConfirm($0) })
                 }
                 if message.isMarked {
                     Label("Подчёркнуто", systemImage: "highlighter")
@@ -554,31 +658,90 @@ struct PollView: View {
     let poll: Poll
     let accent: Color
     var onAnswer: (String) -> Void
+    var onConfirm: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(poll.question, systemImage: "chart.bar.doc.horizontal")
                 .font(.subheadline.bold())
             ForEach(poll.options, id: \.self) { opt in
-                Button { onAnswer(opt) } label: {
+                Button { if !poll.confirmed { onAnswer(opt) } } label: {
                     HStack {
                         Image(systemName: poll.selected == opt ? "largecircle.fill.circle" : "circle")
                             .foregroundStyle(accent)
                         Text(opt).foregroundStyle(.primary)
                         Spacer()
+                        if poll.confirmed && poll.selected == opt {
+                            Image(systemName: "checkmark.seal.fill").foregroundStyle(accent)
+                        }
                     }
                     .padding(.vertical, 8).padding(.horizontal, 10)
                     .background(poll.selected == opt ? accent.opacity(0.18) : Color.gray.opacity(0.12),
                                 in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
+                .disabled(poll.confirmed)
             }
-            if let sel = poll.selected {
-                Text("Твой ответ: \(sel)").font(.caption2).foregroundStyle(.secondary)
+            if poll.confirmed, let sel = poll.selected {
+                Label("Подтверждено: \(sel)", systemImage: "checkmark.circle.fill")
+                    .font(.caption2).foregroundStyle(accent)
+            } else if let sel = poll.selected {
+                Button {
+                    onConfirm(sel)
+                } label: {
+                    Label("Подтвердить выбор", systemImage: "paperplane.fill")
+                        .font(.caption.bold())
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .foregroundStyle(.white)
+                        .background(accent, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Text("Выбери вариант и подтверди").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .frame(maxWidth: 280)
+        .frame(maxWidth: 300)
+    }
+}
+
+// MARK: - Agent task checklist
+
+struct TaskChecklistView: View {
+    let tasks: [AgentTask]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "checklist").foregroundStyle(accent)
+                Text("План задач (\(tasks.filter { $0.status == .done }.count)/\(tasks.count))")
+                    .font(.caption.bold())
+            }
+            ForEach(tasks) { t in
+                HStack(spacing: 8) {
+                    icon(for: t.status)
+                    Text(t.title)
+                        .font(.caption)
+                        .strikethrough(t.status == .done)
+                        .foregroundStyle(t.status == .done ? .secondary : .primary)
+                    Spacer()
+                }
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .frame(maxWidth: 320)
+    }
+
+    @ViewBuilder private func icon(for status: AgentTask.Status) -> some View {
+        switch status {
+        case .pending: Image(systemName: "circle").foregroundStyle(.secondary)
+        case .running: ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
+        case .done:    Image(systemName: "checkmark.circle.fill").foregroundStyle(accent)
+        case .failed:  Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+        }
     }
 }

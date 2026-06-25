@@ -274,10 +274,27 @@ enum ResponseParser {
         return nil
     }
 
+    /// Extract a ```tasks ...``` JSON array block (AI-planned tasks).
+    static func extractTasks(from text: String) -> [AgentTask]? {
+        let pattern = "```tasks\\s*\\n([\\s\\S]*?)```"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
+        let ns = text as NSString
+        guard let m = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let json = ns.substring(with: m.range(at: 1))
+        guard let data = json.data(using: .utf8) else { return nil }
+        if let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
+            return arr.map { AgentTask(title: $0) }
+        }
+        if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return arr.compactMap { ($0["title"] as? String).map { AgentTask(title: $0) } }
+        }
+        return nil
+    }
+
     /// Remove our special control blocks from displayed text.
     static func stripControlBlocks(_ text: String) -> String {
         var t = text
-        for pat in ["```poll\\s*\\n[\\s\\S]*?```", "```image\\s*\\n[\\s\\S]*?```"] {
+        for pat in ["```poll\\s*\\n[\\s\\S]*?```", "```image\\s*\\n[\\s\\S]*?```", "```tasks\\s*\\n[\\s\\S]*?```"] {
             if let r = try? NSRegularExpression(pattern: pat, options: .caseInsensitive) {
                 let ns = t as NSString
                 t = r.stringByReplacingMatches(in: t, range: NSRange(location: 0, length: ns.length), withTemplate: "")
@@ -297,11 +314,21 @@ enum CodeExtractor {
         var index = 1
         for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
             let lang = ns.substring(with: m.range(at: 1))
-            let body = ns.substring(with: m.range(at: 2))
-            let ext = fileExtension(for: lang)
-            let firstLine = body.split(separator: "\n").first.map(String.init) ?? ""
-            let name = detectName(in: firstLine) ?? "snippet_\(index).\(ext)"
-            files.append(GeneratedFile(name: name, language: lang.isEmpty ? "text" : lang, content: body))
+            // Skip our control blocks — they must NOT become files.
+            if ["poll", "image", "tasks"].contains(lang.lowercased()) { continue }
+            var body = ns.substring(with: m.range(at: 2))
+            var lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let firstLine = lines.first ?? ""
+            let name = detectName(in: firstLine)
+            // Only treat a fenced block as a saved FILE if it has an explicit filename.
+            // Plain code snippets (no // file:) stay inline and don't spam project files.
+            guard let fileName = name else { continue }
+            // drop the marker line from saved content
+            if ["file:", "filename:", "File:", "FILE:"].contains(where: { firstLine.contains($0) }) {
+                lines.removeFirst()
+                body = lines.joined(separator: "\n")
+            }
+            files.append(GeneratedFile(name: fileName, language: lang.isEmpty ? "text" : lang, content: body))
             index += 1
         }
         return files

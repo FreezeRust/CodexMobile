@@ -77,6 +77,17 @@ struct Project: Identifiable, Codable, Hashable {
     var createdAt: Date = Date()
     var chats: [Chat] = []
     var files: [GeneratedFile] = []
+    var skills: [Skill] = []                 // reusable abilities/instructions for the AI
+    var instructions: String = ""            // project-wide instructions
+}
+
+// MARK: - Skill (навык/инструкция, которыми ИИ может пользоваться)
+
+struct Skill: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var name: String
+    var detail: String                       // what the skill does / how to use it
+    var enabled: Bool = true
 }
 
 struct Chat: Identifiable, Codable, Hashable {
@@ -96,7 +107,17 @@ struct Message: Identifiable, Codable, Hashable {
     var quoted: String? = nil           // quoted/cited text
     var isMarked: Bool = false          // highlighted (underline)
     var poll: Poll? = nil               // AI-generated poll
+    var tasks: [AgentTask] = []         // AI-planned to-do tasks
     var createdAt: Date = Date()
+}
+
+// MARK: - Agent task (задача, которую ИИ придумывает и выполняет по очереди)
+
+struct AgentTask: Identifiable, Codable, Hashable {
+    enum Status: String, Codable { case pending, running, done, failed }
+    var id: UUID = UUID()
+    var title: String
+    var status: Status = .pending
 }
 
 struct Attachment: Identifiable, Codable, Hashable {
@@ -115,6 +136,16 @@ struct GeneratedFile: Identifiable, Codable, Hashable {
     var language: String
     var content: String
     var createdAt: Date = Date()
+    var history: [FileVersion] = []          // change history (newest first)
+}
+
+// MARK: - File version (история изменений)
+
+struct FileVersion: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var content: String
+    var savedAt: Date = Date()
+    var note: String = ""                    // e.g. "ручная правка" / "ИИ обновил"
 }
 
 // MARK: - Poll (опрос от нейросети)
@@ -123,6 +154,7 @@ struct Poll: Codable, Hashable {
     var question: String
     var options: [String]
     var selected: String? = nil
+    var confirmed: Bool = false              // user must confirm the choice
 }
 
 // MARK: - Themes
@@ -144,6 +176,37 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
 }
 
 // MARK: - Typing animation
+
+enum TypingSpeed: String, Codable, CaseIterable, Identifiable {
+    case slow, normal, fast, instant
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .slow: return "Медленно"
+        case .normal: return "Обычно"
+        case .fast: return "Быстро"
+        case .instant: return "Мгновенно"
+        }
+    }
+    /// Nanoseconds per character step.
+    var charDelay: UInt64 {
+        switch self {
+        case .slow: return 28_000_000
+        case .normal: return 9_000_000
+        case .fast: return 3_000_000
+        case .instant: return 0
+        }
+    }
+    /// Nanoseconds per word step.
+    var wordDelay: UInt64 {
+        switch self {
+        case .slow: return 90_000_000
+        case .normal: return 35_000_000
+        case .fast: return 14_000_000
+        case .instant: return 0
+        }
+    }
+}
 
 enum TypingAnimation: String, Codable, CaseIterable, Identifiable {
     case instant, character, word, fade, wave

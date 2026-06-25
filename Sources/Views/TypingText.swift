@@ -31,7 +31,8 @@ struct TypingBody: View {
     }
 
     private var shouldAnimate: Bool {
-        isStreaming && settings.typingAnimation != .instant && !text.contains("```")
+        isStreaming && settings.typingAnimation != .instant
+            && settings.typingSpeed != .instant && !text.contains("```")
         // For code-heavy messages we render structured blocks instantly to avoid jank.
     }
 
@@ -59,21 +60,23 @@ struct TypingBody: View {
             if start == 0 { revealed = "" }
             switch settings.typingAnimation {
             case .character, .fade, .wave:
+                let delay = settings.typingSpeed.charDelay
                 var idx = start
                 while idx < chars.count {
                     if Task.isCancelled { return }
                     revealed = String(chars[0...idx])
                     idx += 1
-                    try? await Task.sleep(nanoseconds: 9_000_000) // ~110 chars/s
+                    if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
                 }
             case .word:
+                let delay = settings.typingSpeed.wordDelay
                 let words = newValue.split(separator: " ", omittingEmptySubsequences: false)
                 var built = ""
                 for (k, w) in words.enumerated() {
                     if Task.isCancelled { return }
                     built += (k == 0 ? "" : " ") + w
                     revealed = built
-                    try? await Task.sleep(nanoseconds: 35_000_000)
+                    if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
                 }
             case .instant:
                 revealed = newValue
