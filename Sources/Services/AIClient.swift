@@ -6,12 +6,22 @@ struct AIClient {
     let model: String
 
     enum AIError: LocalizedError {
-        case missingKey, badURL, http(Int, String)
+        case missingKey, badURL
+        case http(Int, String)
         var errorDescription: String? {
             switch self {
-            case .missingKey: return "Не задан API-ключ для провайдера."
+            case .missingKey: return "Не задан API-ключ. Открой «Настройки → Нейросети» и впиши ключ."
             case .badURL:     return "Некорректный Base URL провайдера."
-            case .http(let c, let b): return "Ошибка API (\(c)): \(b)"
+            case .http(let c, let b):
+                let hint: String
+                switch c {
+                case 401: hint = "Неверный API-ключ (401). Проверь ключ и что он от нужного провайдера."
+                case 403: hint = "Доступ запрещён (403). Ключ без прав или нет доступа к модели."
+                case 404: hint = "Не найдено (404). Проверь Base URL и имя модели."
+                case 429: hint = "Лимит/нет средств (429). Проверь биллинг провайдера."
+                default:  hint = "Ошибка \(c)."
+                }
+                return b.isEmpty ? hint : "\(hint)\n\nОтвет сервера: \(b)"
             }
         }
     }
@@ -29,14 +39,18 @@ struct AIClient {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    guard let key = KeychainService.get(provider.apiKeyRef), !key.isEmpty else { throw AIError.missingKey }
-                    let base = provider.baseURL.hasSuffix("/") ? String(provider.baseURL.dropLast()) : provider.baseURL
-                    guard let url = URL(string: base + "/chat/completions") else { throw AIError.badURL }
+                    guard let key = KeychainService.get(provider.apiKeyRef),
+                          !key.trimmingCharacters(in: .whitespaces).isEmpty else { throw AIError.missingKey }
+                    guard let url = URL(string: endpoint("/chat/completions")) else { throw AIError.badURL }
 
                     var req = URLRequest(url: url)
                     req.httpMethod = "POST"
+                    req.timeoutInterval = 120
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+                    req.setValue("Bearer \(key.trimmingCharacters(in: .whitespaces))", forHTTPHeaderField: "Authorization")
+                    // OpenRouter niceties (ignored by other providers)
+                    req.setValue("https://openvolt.app", forHTTPHeaderField: "HTTP-Referer")
+                    req.setValue("OpenVolt", forHTTPHeaderField: "X-Title")
 
                     let msgs: [[String: Any]] = messages.map { m in
                         if m.attachments.contains(where: { $0.kind == .image }) {
@@ -54,7 +68,8 @@ struct AIClient {
 
                     let (bytes, resp) = try await URLSession.shared.bytes(for: req)
                     if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
-                        throw AIError.http(h.statusCode, "запрос отклонён")
+                        let body = await collectBody(bytes)
+                        throw AIError.http(h.statusCode, parseError(body))
                     }
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data:") else { continue }
@@ -79,16 +94,18 @@ struct AIClient {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    guard let key = KeychainService.get(provider.apiKeyRef), !key.isEmpty else { throw AIError.missingKey }
-                    let base = provider.baseURL.hasSuffix("/") ? String(provider.baseURL.dropLast()) : provider.baseURL
-                    guard let url = URL(string: base + "/messages") else { throw AIError.badURL }
+                    guard let key = KeychainService.get(provider.apiKeyRef),
+                          !key.trimmingCharacters(in: .whitespaces).isEmpty else { throw AIError.missingKey }
+                    guard let url = URL(string: endpoint("/messages")) else { throw AIError.badURL }
 
                     var req = URLRequest(url: url)
                     req.httpMethod = "POST"
+                    req.timeoutInterval = 120
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue(key, forHTTPHeaderField: "x-api-key")
+                    req.setValue(key.trimmingCharacters(in: .whitespaces), forHTTPHeaderField: "x-api-key")
                     req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
+                    let system = messages.first(where: { $0.role == .system })?.content
                     let msgs: [[String: Any]] = messages.filter { $0.role != .system }.map { m in
                         var parts: [[String: Any]] = []
                         for a in m.attachments where a.kind == .image {
@@ -98,12 +115,14 @@ struct AIClient {
                         parts.append(["type": "text", "text": fullText(m)])
                         return ["role": m.role == .assistant ? "assistant" : "user", "content": parts]
                     }
-                    let payload: [String: Any] = ["model": model, "max_tokens": 4096, "stream": true, "messages": msgs]
+                    var payload: [String: Any] = ["model": model, "max_tokens": 4096, "stream": true, "messages": msgs]
+                    if let system, !system.isEmpty { payload["system"] = system }
                     req.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
                     let (bytes, resp) = try await URLSession.shared.bytes(for: req)
                     if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
-                        throw AIError.http(h.statusCode, "запрос отклонён")
+                        let body = await collectBody(bytes)
+                        throw AIError.http(h.statusCode, parseError(body))
                     }
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data:") else { continue }
@@ -120,15 +139,44 @@ struct AIClient {
         }
     }
 
+    // MARK: - Helpers
+
+    private func endpoint(_ path: String) -> String {
+        var base = provider.baseURL.trimmingCharacters(in: .whitespaces)
+        if base.hasSuffix("/") { base.removeLast() }
+        // If user already included the full endpoint, don't double it.
+        if base.hasSuffix(path) { return base }
+        return base + path
+    }
+
     private func fullText(_ m: Message) -> String {
         var t = m.content
-        let docs = m.attachments.filter { $0.kind == .file }
-        for d in docs {
+        for d in m.attachments where d.kind == .file {
             if let data = Data(base64Encoded: d.base64), let s = String(data: data, encoding: .utf8) {
                 t += "\n\n--- Файл: \(d.fileName) ---\n\(s)"
             }
         }
         return t
+    }
+
+    private func collectBody(_ bytes: URLSession.AsyncBytes) async -> String {
+        var data = Data()
+        if let collected = try? await bytes.reduce(into: Data(), { $0.append($1) }) {
+            data = collected
+        }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// Extract a human message from a JSON error body if possible.
+    private func parseError(_ body: String) -> String {
+        guard let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return String(body.prefix(300))
+        }
+        if let err = obj["error"] as? [String: Any], let msg = err["message"] as? String { return msg }
+        if let msg = obj["error"] as? String { return msg }
+        if let msg = obj["message"] as? String { return msg }
+        return String(body.prefix(300))
     }
 }
 

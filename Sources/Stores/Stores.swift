@@ -75,9 +75,6 @@ final class SettingsStore: ObservableObject {
     @Published var systemPrompt: String {
         didSet { UserDefaults.standard.set(systemPrompt, forKey: "system_prompt") }
     }
-    @Published var useCodexModels: Bool {
-        didSet { UserDefaults.standard.set(useCodexModels, forKey: "use_codex_models") }
-    }
 
     private let key = "ai_providers"
 
@@ -85,8 +82,7 @@ final class SettingsStore: ObservableObject {
         theme = AppTheme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .volt
         accent = AccentTheme(rawValue: UserDefaults.standard.string(forKey: "accent") ?? "") ?? .volt
         systemPrompt = UserDefaults.standard.string(forKey: "system_prompt")
-            ?? "Ты — Codex, помощник-программист в приложении OpenVolt. Когда создаёшь файлы, оборачивай их в блоки ```язык и указывай имя файла комментарием // file: имя в первой строке."
-        useCodexModels = UserDefaults.standard.object(forKey: "use_codex_models") as? Bool ?? true
+            ?? "Ты — помощник-программист в приложении OpenVolt. Когда создаёшь файлы, оборачивай их в блоки ```язык и указывай имя файла комментарием // file: имя в первой строке."
         loadProviders()
     }
 
@@ -128,35 +124,17 @@ final class SettingsStore: ObservableObject {
     var defaultProvider: AIProvider? { providers.first(where: { $0.isDefault }) ?? providers.first }
 
     /// All selectable models for the chat picker.
-    func availableSelections(codexLoggedIn: Bool) -> [ModelSelection] {
+    func availableSelections() -> [ModelSelection] {
         var out: [ModelSelection] = []
         for p in providers {
             for m in p.models {
-                out.append(ModelSelection(source: .api, providerID: p.id, model: m,
-                                          displayName: "\(p.name) · \(m)"))
+                out.append(ModelSelection(providerID: p.id, model: m, displayName: "\(p.name) · \(m)"))
             }
-        }
-        if useCodexModels && codexLoggedIn {
-            out.append(.codex("gpt-5-codex"))
-            out.append(.codex("codex-mini"))
         }
         return out
     }
 
     func provider(for id: UUID?) -> AIProvider? {
         providers.first(where: { $0.id == id })
-    }
-}
-
-/// Codex web login state.
-@MainActor
-final class SessionStore: ObservableObject {
-    @Published var isCodexLoggedIn: Bool {
-        didSet { UserDefaults.standard.set(isCodexLoggedIn, forKey: "codex_logged_in") }
-    }
-    init() { isCodexLoggedIn = UserDefaults.standard.bool(forKey: "codex_logged_in") }
-    func logout() {
-        isCodexLoggedIn = false
-        CodexWebSession.clearCookies()
     }
 }

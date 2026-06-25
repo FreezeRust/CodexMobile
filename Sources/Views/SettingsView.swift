@@ -2,10 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
-    @EnvironmentObject var session: SessionStore
     @State private var editing: AIProvider?
-    @State private var showingNew = false
-    @State private var showCodexLogin = false
+    @State private var newProvider: AIProvider?
     @State private var showSystemPrompt = false
 
     var body: some View {
@@ -14,7 +12,6 @@ struct SettingsView: View {
                 if let bg = settings.theme.background { bg.ignoresSafeArea() }
                 List {
                     appearanceSection
-                    codexSection
                     providersSection
                     behaviorSection
                     aboutSection
@@ -22,9 +19,8 @@ struct SettingsView: View {
                 .scrollContentBackground(settings.theme.background == nil ? .visible : .hidden)
             }
             .navigationTitle("Настройки")
-            .sheet(isPresented: $showingNew) { ProviderEditor(provider: nil) }
-            .sheet(item: $editing) { p in ProviderEditor(provider: p) }
-            .sheet(isPresented: $showCodexLogin) { CodexLoginSheet() }
+            .sheet(item: $newProvider) { p in ProviderEditor(provider: nil, prefill: p) }
+            .sheet(item: $editing) { p in ProviderEditor(provider: p, prefill: nil) }
             .sheet(isPresented: $showSystemPrompt) { systemPromptEditor }
         }
     }
@@ -55,36 +51,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Codex
-
-    private var codexSection: some View {
-        Section {
-            if session.isCodexLoggedIn {
-                HStack {
-                    Label("Codex подключён", systemImage: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
-                    Spacer()
-                    Button("Выйти", role: .destructive) { session.logout() }
-                }
-                Button {
-                    showCodexLogin = true
-                } label: { Label("Открыть Codex", systemImage: "bolt.fill") }
-            } else {
-                Button {
-                    showCodexLogin = true
-                } label: {
-                    Label("Войти в Codex через аккаунт", systemImage: "person.crop.circle.badge.plus")
-                }
-                Toggle("Показывать модели Codex в чате", isOn: $settings.useCodexModels)
-            }
-        } header: {
-            Text("Codex аккаунт")
-        } footer: {
-            Text("Альтернатива API-ключу: входишь в свой аккаунт Codex и работаешь через него. " +
-                 "Сессия сохраняется на устройстве.")
-        }
-    }
-
     // MARK: - Providers (нейросети по API)
 
     private var providersSection: some View {
@@ -96,13 +62,19 @@ struct SettingsView: View {
                         Button("Удалить", role: .destructive) { settings.delete(p) }
                     }
             }
-            Button { showingNew = true } label: {
+            Menu {
+                Button { newProvider = ProviderPreset.openAI.template } label: { Label("OpenAI", systemImage: "sparkles") }
+                Button { newProvider = ProviderPreset.anthropic.template } label: { Label("Anthropic (Claude)", systemImage: "a.circle") }
+                Button { newProvider = ProviderPreset.openRouter.template } label: { Label("OpenRouter (сотни моделей)", systemImage: "point.3.connected.trianglepath.dotted") }
+                Button { newProvider = ProviderPreset.custom.template } label: { Label("Custom (свой endpoint)", systemImage: "slider.horizontal.3") }
+            } label: {
                 Label("Добавить нейросеть", systemImage: "plus")
             }
         } header: {
             Text("Нейросети по API")
         } footer: {
-            Text("Поддерживаются типы: OpenAI, Anthropic и Custom (любой OpenAI-совместимый endpoint).")
+            Text("OpenAI, Anthropic, OpenRouter и любой OpenAI-совместимый endpoint (Custom). " +
+                 "Совет: OpenRouter = один ключ на сотни моделей.")
         }
     }
 
@@ -164,7 +136,7 @@ struct SettingsView: View {
                 Image(systemName: "bolt.fill").foregroundStyle(settings.accent.gradient)
                 VStack(alignment: .leading) {
                     Text("OpenVolt").font(.headline)
-                    Text("v1.0 · Codex на твоём iPhone").font(.caption).foregroundStyle(.secondary)
+                    Text("v1.0 · ИИ-агрегатор на твоём iPhone").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -173,10 +145,32 @@ struct SettingsView: View {
 
 // MARK: - Provider editor
 
+enum ProviderPreset {
+    case openAI, anthropic, openRouter, custom
+    var template: AIProvider {
+        switch self {
+        case .openAI:
+            return AIProvider(name: "OpenAI", kind: .openAI, baseURL: "https://api.openai.com/v1",
+                              models: ["gpt-4o-mini", "gpt-4o"], apiKeyRef: UUID().uuidString)
+        case .anthropic:
+            return AIProvider(name: "Anthropic", kind: .anthropic, baseURL: "https://api.anthropic.com/v1",
+                              models: ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"], apiKeyRef: UUID().uuidString)
+        case .openRouter:
+            return AIProvider(name: "OpenRouter", kind: .custom, baseURL: "https://openrouter.ai/api/v1",
+                              models: ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-flash-1.5"],
+                              apiKeyRef: UUID().uuidString)
+        case .custom:
+            return AIProvider(name: "Custom", kind: .custom, baseURL: "https://",
+                              models: ["model-name"], apiKeyRef: UUID().uuidString)
+        }
+    }
+}
+
 struct ProviderEditor: View {
     @EnvironmentObject var settings: SettingsStore
     @Environment(\.dismiss) var dismiss
     let provider: AIProvider?
+    let prefill: AIProvider?
 
     @State private var name = ""
     @State private var kind: ProviderKind = .openAI
@@ -228,7 +222,10 @@ struct ProviderEditor: View {
                     Button("Сохранить") { save() }.disabled(name.isEmpty || baseURL.isEmpty || modelsText.isEmpty)
                 }
             }
-            .onAppear { if let p = provider { load(p) } }
+            .onAppear {
+                if let p = provider { load(p) }
+                else if let p = prefill { load(p) }
+            }
         }
     }
 

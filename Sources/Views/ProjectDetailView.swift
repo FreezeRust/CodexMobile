@@ -3,7 +3,6 @@ import SwiftUI
 struct ProjectDetailView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var settings: SettingsStore
-    @EnvironmentObject var session: SessionStore
     let projectID: UUID
 
     @State private var showingNewChat = false
@@ -27,7 +26,7 @@ struct ProjectDetailView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(chat.title).font(.headline)
                                     HStack(spacing: 6) {
-                                        Image(systemName: chat.selection?.source == .codex ? "bolt.fill" : "cpu")
+                                        Image(systemName: "cpu")
                                         Text(chat.selection?.displayName ?? "Модель не выбрана")
                                     }
                                     .font(.caption2).foregroundStyle(.secondary)
@@ -57,7 +56,7 @@ struct ProjectDetailView: View {
             TextField("Тема чата", text: $newChatTitle)
             Button("Создать") {
                 let t = newChatTitle.trimmingCharacters(in: .whitespaces)
-                let sel = settings.availableSelections(codexLoggedIn: session.isCodexLoggedIn).first
+                let sel = settings.availableSelections().first
                 _ = store.addChat(to: projectID, title: t.isEmpty ? "Новый чат" : t, selection: sel)
                 newChatTitle = ""
             }

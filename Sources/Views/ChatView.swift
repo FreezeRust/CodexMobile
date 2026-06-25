@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var settings: SettingsStore
-    @EnvironmentObject var session: SessionStore
     let projectID: UUID
     let chatID: UUID
 
@@ -20,9 +19,7 @@ struct ChatView: View {
     private var chat: Chat? {
         store.projects.first(where: { $0.id == projectID })?.chats.first(where: { $0.id == chatID })
     }
-    private var selections: [ModelSelection] {
-        settings.availableSelections(codexLoggedIn: session.isCodexLoggedIn)
-    }
+    private var selections: [ModelSelection] { settings.availableSelections() }
 
     var body: some View {
         ZStack {
@@ -31,7 +28,8 @@ struct ChatView: View {
                 messagesList
                 if let errorText {
                     Text(errorText).font(.caption).foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal).padding(.vertical, 4)
                 }
                 attachmentStrip
                 inputBar
@@ -40,7 +38,6 @@ struct ChatView: View {
         .navigationTitle(chat?.title ?? "Чат")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
-        .codexVerificationOverlay()
         .sheet(isPresented: $showModelPicker) { modelPicker }
         .onChange(of: photoItems) { _, items in Task { await loadPhotos(items) } }
         .fileImporter(isPresented: $showFileImporter,
@@ -108,7 +105,7 @@ struct ChatView: View {
                     .foregroundStyle(settings.accent.color)
             }
 
-            TextField("Спроси Codex…", text: $input, axis: .vertical)
+            TextField("Сообщение…", text: $input, axis: .vertical)
                 .lineLimit(1...6)
                 .padding(.horizontal, 14).padding(.vertical, 9)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
@@ -137,8 +134,8 @@ struct ChatView: View {
         ToolbarItem(placement: .navigationBarTrailing) {
             Button { showModelPicker = true } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: chat?.selection?.source == .codex ? "bolt.fill" : "cpu")
-                    Text(shortModelName).font(.caption.bold())
+                    Image(systemName: "cpu")
+                    Text(chat?.selection?.model ?? "Модель").font(.caption.bold()).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption2)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 5)
@@ -147,27 +144,19 @@ struct ChatView: View {
         }
     }
 
-    private var shortModelName: String {
-        chat?.selection?.model ?? "Модель"
-    }
-
     private var modelPicker: some View {
         NavigationStack {
             List {
                 if selections.isEmpty {
-                    ContentUnavailableView("Нет доступных моделей", systemImage: "cpu",
-                        description: Text("Добавь нейросеть по API или войди в Codex во вкладке «Настройки»."))
+                    ContentUnavailableView("Нет моделей", systemImage: "cpu",
+                        description: Text("Добавь нейросеть по API в «Настройки → Нейросети»."))
                 } else {
-                    let apiModels = selections.filter { $0.source == .api }
-                    let codexModels = selections.filter { $0.source == .codex }
-                    if !apiModels.isEmpty {
-                        Section("Модели по API") {
-                            ForEach(apiModels) { sel in modelRow(sel) }
-                        }
-                    }
-                    if !codexModels.isEmpty {
-                        Section("Модели Codex (через аккаунт)") {
-                            ForEach(codexModels) { sel in modelRow(sel) }
+                    ForEach(settings.providers) { p in
+                        Section(p.name) {
+                            ForEach(p.models, id: \.self) { m in
+                                let sel = ModelSelection(providerID: p.id, model: m, displayName: "\(p.name) · \(m)")
+                                modelRow(sel)
+                            }
                         }
                     }
                 }
@@ -189,9 +178,8 @@ struct ChatView: View {
             showModelPicker = false
         } label: {
             HStack {
-                Image(systemName: sel.source == .codex ? "bolt.fill" : "cpu")
-                    .foregroundStyle(settings.accent.color)
-                Text(sel.displayName).foregroundStyle(.primary)
+                Image(systemName: "cpu").foregroundStyle(settings.accent.color)
+                Text(sel.model).foregroundStyle(.primary)
                 Spacer()
                 if chat?.selection?.id == sel.id {
                     Image(systemName: "checkmark").foregroundStyle(settings.accent.color)
@@ -246,38 +234,10 @@ struct ChatView: View {
         store.appendMessage(Message(role: .assistant, content: ""),
                             projectID: projectID, chatID: chatID)
 
-        // Codex models run through the logged-in web session via CodexBridge.
-        if sel.source == .codex {
-            guard session.isCodexLoggedIn else {
-                store.updateLastAssistantMessage(
-                    "⚠️ Нет активной сессии Codex. Открой «Настройки → Codex» и войди в аккаунт.",
-                    projectID: projectID, chatID: chatID)
-                store.save()
-                return
-            }
-            isStreaming = true
-            defer { isStreaming = false }
-            do {
-                var acc = ""
-                try await CodexBridge.shared.send(prompt: text) { partial in
-                    acc = partial
-                    store.updateLastAssistantMessage(partial, projectID: projectID, chatID: chatID)
-                }
-                store.save()
-                let files = CodeExtractor.extract(from: acc)
-                if !files.isEmpty { store.attachFiles(files, projectID: projectID) }
-            } catch {
-                errorText = error.localizedDescription
-                store.updateLastAssistantMessage("⚠️ \(error.localizedDescription)",
-                                                 projectID: projectID, chatID: chatID)
-                store.save()
-            }
-            return
-        }
-
         guard let provider = settings.provider(for: sel.providerID) else {
-            errorText = "Провайдер не найден."
-            return
+            store.updateLastAssistantMessage("⚠️ Провайдер не найден. Открой «Настройки → Нейросети».",
+                                             projectID: projectID, chatID: chatID)
+            store.save(); return
         }
 
         isStreaming = true
@@ -298,7 +258,7 @@ struct ChatView: View {
             }
             if acc.isEmpty {
                 store.updateLastAssistantMessage(
-                    "⚠️ Пустой ответ от API. Проверь модель «\(sel.model)», Base URL и ключ в «Настройки → Нейросети».",
+                    "⚠️ Пустой ответ. Проверь модель «\(sel.model)», Base URL и ключ.",
                     projectID: projectID, chatID: chatID)
             }
             store.save()
@@ -342,10 +302,7 @@ struct MessageBubble: View {
     }
 
     @ViewBuilder private var bubbleBackground: some View {
-        if isUser {
-            settings.accent.gradient
-        } else {
-            (settings.theme.card ?? Color(.secondarySystemBackground))
-        }
+        if isUser { settings.accent.gradient }
+        else { (settings.theme.card ?? Color(.secondarySystemBackground)) }
     }
 }

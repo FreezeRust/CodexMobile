@@ -64,19 +64,13 @@ struct AIProvider: Identifiable, Codable, Hashable {
     }
 }
 
-// MARK: - Selectable model in chat (API model или Codex model)
+// MARK: - Selectable model in chat
 
 struct ModelSelection: Codable, Hashable, Identifiable {
-    enum Source: String, Codable { case api, codex }
-    var id: String { source.rawValue + "|" + (providerID?.uuidString ?? "codex") + "|" + model }
-    var source: Source
-    var providerID: UUID?           // nil для codex
+    var id: String { (providerID?.uuidString ?? "none") + "|" + model }
+    var providerID: UUID?
     var model: String
     var displayName: String
-
-    static func codex(_ model: String) -> ModelSelection {
-        ModelSelection(source: .codex, providerID: nil, model: model, displayName: "Codex · \(model)")
-    }
 }
 
 // MARK: - Project
