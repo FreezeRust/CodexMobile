@@ -1,6 +1,7 @@
 import Foundation
 
-/// Talks to OpenAI-compatible or Anthropic APIs with streaming.
+/// Talks to OpenAI-compatible or Anthropic APIs with streaming,
+/// automatic retries for transient errors (5xx/429) and a non-streaming fallback.
 struct AIClient {
     let provider: AIProvider
     let model: String
@@ -19,6 +20,7 @@ struct AIClient {
                 case 403: hint = "Доступ запрещён (403). Ключ без прав или нет доступа к модели."
                 case 404: hint = "Не найдено (404). Проверь Base URL и имя модели."
                 case 429: hint = "Лимит/нет средств (429). Проверь биллинг провайдера."
+                case 500...599: hint = "Сервер провайдера временно недоступен (\(c)). Мы пробовали несколько раз — попробуй позже или другую модель."
                 default:  hint = "Ошибка \(c)."
                 }
                 return b.isEmpty ? hint : "\(hint)\n\nОтвет сервера: \(b)"
@@ -26,117 +28,152 @@ struct AIClient {
         }
     }
 
+    private static func isTransient(_ code: Int) -> Bool {
+        code == 429 || (500...599).contains(code)
+    }
+
     func stream(messages: [Message]) -> AsyncThrowingStream<String, Error> {
-        switch provider.kind {
-        case .anthropic: return streamAnthropic(messages: messages)
-        default:         return streamOpenAI(messages: messages)
-        }
-    }
-
-    // MARK: - OpenAI-compatible (OpenAI / Custom)
-
-    private func streamOpenAI(messages: [Message]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    guard let key = KeychainService.get(provider.apiKeyRef),
-                          !key.trimmingCharacters(in: .whitespaces).isEmpty else { throw AIError.missingKey }
-                    guard let url = URL(string: endpoint("/chat/completions")) else { throw AIError.badURL }
-
-                    var req = URLRequest(url: url)
-                    req.httpMethod = "POST"
-                    req.timeoutInterval = 120
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue("Bearer \(key.trimmingCharacters(in: .whitespaces))", forHTTPHeaderField: "Authorization")
-                    // OpenRouter niceties (ignored by other providers)
-                    req.setValue("https://openvolt.app", forHTTPHeaderField: "HTTP-Referer")
-                    req.setValue("OpenVolt", forHTTPHeaderField: "X-Title")
-
-                    let msgs: [[String: Any]] = messages.map { m in
-                        if m.attachments.contains(where: { $0.kind == .image }) {
-                            var parts: [[String: Any]] = [["type": "text", "text": m.content]]
-                            for a in m.attachments where a.kind == .image {
-                                parts.append(["type": "image_url",
-                                              "image_url": ["url": "data:\(a.mimeType);base64,\(a.base64)"]])
-                            }
-                            return ["role": m.role.rawValue, "content": parts]
-                        }
-                        return ["role": m.role.rawValue, "content": fullText(m)]
-                    }
-                    let payload: [String: Any] = ["model": model, "stream": true, "messages": msgs]
-                    req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-
-                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
-                    if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
-                        let body = await collectBody(bytes)
-                        throw AIError.http(h.statusCode, parseError(body))
-                    }
-                    for try await line in bytes.lines {
-                        guard line.hasPrefix("data:") else { continue }
-                        let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if json == "[DONE]" { break }
-                        guard let data = json.data(using: .utf8),
-                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let choices = obj["choices"] as? [[String: Any]],
-                              let delta = choices.first?["delta"] as? [String: Any],
-                              let token = delta["content"] as? String else { continue }
-                        continuation.yield(token)
-                    }
+                    try await run(messages: messages) { continuation.yield($0) }
                     continuation.finish()
-                } catch { continuation.finish(throwing: error) }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
             }
         }
     }
 
-    // MARK: - Anthropic
+    /// Tries streaming with retries; if streaming keeps failing on transient
+    /// errors, falls back to a single non-streaming request.
+    private func run(messages: [Message], onToken: @escaping (String) -> Void) async throws {
+        let maxAttempts = 3
+        var lastError: Error?
 
-    private func streamAnthropic(messages: [Message]) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    guard let key = KeychainService.get(provider.apiKeyRef),
-                          !key.trimmingCharacters(in: .whitespaces).isEmpty else { throw AIError.missingKey }
-                    guard let url = URL(string: endpoint("/messages")) else { throw AIError.badURL }
-
-                    var req = URLRequest(url: url)
-                    req.httpMethod = "POST"
-                    req.timeoutInterval = 120
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue(key.trimmingCharacters(in: .whitespaces), forHTTPHeaderField: "x-api-key")
-                    req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-                    let system = messages.first(where: { $0.role == .system })?.content
-                    let msgs: [[String: Any]] = messages.filter { $0.role != .system }.map { m in
-                        var parts: [[String: Any]] = []
-                        for a in m.attachments where a.kind == .image {
-                            parts.append(["type": "image",
-                                          "source": ["type": "base64", "media_type": a.mimeType, "data": a.base64]])
-                        }
-                        parts.append(["type": "text", "text": fullText(m)])
-                        return ["role": m.role == .assistant ? "assistant" : "user", "content": parts]
-                    }
-                    var payload: [String: Any] = ["model": model, "max_tokens": 4096, "stream": true, "messages": msgs]
-                    if let system, !system.isEmpty { payload["system"] = system }
-                    req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-
-                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
-                    if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
-                        let body = await collectBody(bytes)
-                        throw AIError.http(h.statusCode, parseError(body))
-                    }
-                    for try await line in bytes.lines {
-                        guard line.hasPrefix("data:") else { continue }
-                        let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        guard let data = json.data(using: .utf8),
-                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let delta = obj["delta"] as? [String: Any],
-                              let token = delta["text"] as? String else { continue }
-                        continuation.yield(token)
-                    }
-                    continuation.finish()
-                } catch { continuation.finish(throwing: error) }
+        // 1) streaming attempts with exponential backoff on transient errors
+        for attempt in 0..<maxAttempts {
+            do {
+                try await performStreaming(messages: messages, onToken: onToken)
+                return
+            } catch let AIError.http(code, body) where Self.isTransient(code) {
+                lastError = AIError.http(code, body)
+                let delay = UInt64(pow(2.0, Double(attempt))) * 700_000_000  // 0.7s, 1.4s, 2.8s
+                try? await Task.sleep(nanoseconds: delay)
+            } catch let urlError as URLError where urlError.code == .networkConnectionLost
+                                                || urlError.code == .timedOut {
+                lastError = urlError
+                try? await Task.sleep(nanoseconds: 700_000_000)
             }
         }
+
+        // 2) non-streaming fallback (some endpoints/proxies 503 only on stream)
+        do {
+            let text = try await performNonStreaming(messages: messages)
+            if !text.isEmpty { onToken(text) }
+            return
+        } catch {
+            throw lastError ?? error
+        }
+    }
+
+    // MARK: - Streaming request
+
+    private func performStreaming(messages: [Message], onToken: @escaping (String) -> Void) async throws {
+        let (req, isAnthropic) = try buildRequest(messages: messages, stream: true)
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
+            let body = await collectBody(bytes)
+            throw AIError.http(h.statusCode, parseError(body))
+        }
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else { continue }
+            let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if json == "[DONE]" { break }
+            guard let data = json.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            if isAnthropic {
+                if let delta = obj["delta"] as? [String: Any], let t = delta["text"] as? String { onToken(t) }
+            } else {
+                if let choices = obj["choices"] as? [[String: Any]],
+                   let delta = choices.first?["delta"] as? [String: Any],
+                   let t = delta["content"] as? String { onToken(t) }
+            }
+        }
+    }
+
+    // MARK: - Non-streaming request (fallback)
+
+    private func performNonStreaming(messages: [Message]) async throws -> String {
+        let (req, isAnthropic) = try buildRequest(messages: messages, stream: false)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
+            throw AIError.http(h.statusCode, parseError(String(data: data, encoding: .utf8) ?? ""))
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
+        if isAnthropic {
+            if let content = obj["content"] as? [[String: Any]] {
+                return content.compactMap { $0["text"] as? String }.joined()
+            }
+        } else {
+            if let choices = obj["choices"] as? [[String: Any]],
+               let msg = choices.first?["message"] as? [String: Any],
+               let content = msg["content"] as? String { return content }
+        }
+        return ""
+    }
+
+    // MARK: - Request building
+
+    private func buildRequest(messages: [Message], stream: Bool) throws -> (URLRequest, Bool) {
+        guard let key = KeychainService.get(provider.apiKeyRef),
+              !key.trimmingCharacters(in: .whitespaces).isEmpty else { throw AIError.missingKey }
+        let trimmedKey = key.trimmingCharacters(in: .whitespaces)
+        let isAnthropic = provider.kind == .anthropic
+
+        let path = isAnthropic ? "/messages" : "/chat/completions"
+        guard let url = URL(string: endpoint(path)) else { throw AIError.badURL }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 120
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        if isAnthropic {
+            req.setValue(trimmedKey, forHTTPHeaderField: "x-api-key")
+            req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            let system = messages.first(where: { $0.role == .system })?.content
+            let msgs: [[String: Any]] = messages.filter { $0.role != .system }.map { m in
+                var parts: [[String: Any]] = []
+                for a in m.attachments where a.kind == .image {
+                    parts.append(["type": "image",
+                                  "source": ["type": "base64", "media_type": a.mimeType, "data": a.base64]])
+                }
+                parts.append(["type": "text", "text": fullText(m)])
+                return ["role": m.role == .assistant ? "assistant" : "user", "content": parts]
+            }
+            var payload: [String: Any] = ["model": model, "max_tokens": 4096, "stream": stream, "messages": msgs]
+            if let system, !system.isEmpty { payload["system"] = system }
+            req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        } else {
+            req.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+            req.setValue("https://openvolt.app", forHTTPHeaderField: "HTTP-Referer")
+            req.setValue("OpenVolt", forHTTPHeaderField: "X-Title")
+            let msgs: [[String: Any]] = messages.map { m in
+                if m.attachments.contains(where: { $0.kind == .image }) {
+                    var parts: [[String: Any]] = [["type": "text", "text": m.content]]
+                    for a in m.attachments where a.kind == .image {
+                        parts.append(["type": "image_url",
+                                      "image_url": ["url": "data:\(a.mimeType);base64,\(a.base64)"]])
+                    }
+                    return ["role": m.role.rawValue, "content": parts]
+                }
+                return ["role": m.role.rawValue, "content": fullText(m)]
+            }
+            let payload: [String: Any] = ["model": model, "stream": stream, "messages": msgs]
+            req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        }
+        return (req, isAnthropic)
     }
 
     // MARK: - Helpers
@@ -144,7 +181,6 @@ struct AIClient {
     private func endpoint(_ path: String) -> String {
         var base = provider.baseURL.trimmingCharacters(in: .whitespaces)
         if base.hasSuffix("/") { base.removeLast() }
-        // If user already included the full endpoint, don't double it.
         if base.hasSuffix(path) { return base }
         return base + path
     }
@@ -160,14 +196,12 @@ struct AIClient {
     }
 
     private func collectBody(_ bytes: URLSession.AsyncBytes) async -> String {
-        var data = Data()
         if let collected = try? await bytes.reduce(into: Data(), { $0.append($1) }) {
-            data = collected
+            return String(data: collected, encoding: .utf8) ?? ""
         }
-        return String(data: data, encoding: .utf8) ?? ""
+        return ""
     }
 
-    /// Extract a human message from a JSON error body if possible.
     private func parseError(_ body: String) -> String {
         guard let data = body.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
