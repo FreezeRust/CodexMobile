@@ -116,6 +116,9 @@ final class SettingsStore: ObservableObject {
     @Published var systemPrompt: String {
         didSet { UserDefaults.standard.set(systemPrompt, forKey: "system_prompt") }
     }
+    @Published var typingAnimation: TypingAnimation {
+        didSet { UserDefaults.standard.set(typingAnimation.rawValue, forKey: "typing_anim") }
+    }
     // Custom theme colors (hex strings)
     @Published var customAccentHex: String {
         didSet { UserDefaults.standard.set(customAccentHex, forKey: "custom_accent") }
@@ -136,11 +139,12 @@ final class SettingsStore: ObservableObject {
         theme = AppTheme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .volt
         accent = AccentTheme(rawValue: UserDefaults.standard.string(forKey: "accent") ?? "") ?? .volt
         systemPrompt = UserDefaults.standard.string(forKey: "system_prompt")
-            ?? "Ты — помощник-программист в приложении OpenVolt. Когда создаёшь файлы, оборачивай их в блоки ```язык и указывай имя файла комментарием // file: имя в первой строке. Если хочешь задать пользователю опрос, выведи блок ```poll с JSON {\"question\":\"...\",\"options\":[\"A\",\"B\"]}. Чтобы процитировать, начни строку с >."
+            ?? "Ты — помощник-программист в приложении OpenVolt. Когда создаёшь файл, ВСЕГДА оборачивай его в блок ```язык и первой строкой ставь комментарий с именем файла, например // file: calculator.html — тогда пользователь увидит карточку «Создание calculator.html». Используй markdown: заголовки #, списки -, **жирный**. Если уместно задать вопрос с вариантами, выведи блок ```poll с JSON {\"question\":\"...\",\"options\":[\"A\",\"B\"]}."
         customAccentHex = UserDefaults.standard.string(forKey: "custom_accent") ?? "#6B55F4"
         customBackgroundHex = UserDefaults.standard.string(forKey: "custom_bg") ?? "#0D0A1F"
         customCardHex = UserDefaults.standard.string(forKey: "custom_card") ?? "#1A1430"
         customIsDark = UserDefaults.standard.object(forKey: "custom_dark") as? Bool ?? true
+        typingAnimation = TypingAnimation(rawValue: UserDefaults.standard.string(forKey: "typing_anim") ?? "") ?? .character
         loadProviders()
     }
 

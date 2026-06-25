@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var newProvider: AIProvider?
     @State private var showSystemPrompt = false
     @State private var showThemeEditor = false
+    @State private var showTyping = false
 
     var body: some View {
         NavigationStack {
@@ -24,6 +25,7 @@ struct SettingsView: View {
             .sheet(item: $editing) { p in ProviderEditor(provider: p, prefill: nil) }
             .sheet(isPresented: $showSystemPrompt) { systemPromptEditor }
             .sheet(isPresented: $showThemeEditor) { ThemeEditor() }
+            .sheet(isPresented: $showTyping) { TypingAnimationPicker() }
         }
     }
 
@@ -118,6 +120,14 @@ struct SettingsView: View {
                 HStack {
                     Label("Системный промпт", systemImage: "text.bubble")
                     Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+            Button { showTyping = true } label: {
+                HStack {
+                    Label("Анимация печати ИИ", systemImage: "text.cursor")
+                    Spacer()
+                    Text(settings.typingAnimation.title).font(.caption).foregroundStyle(.secondary)
                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                 }
             }
@@ -350,5 +360,65 @@ struct ThemeEditor: View {
         settings.accent = .custom
         settings.theme = .custom
         dismiss()
+    }
+}
+
+// MARK: - Typing animation picker with live preview
+
+struct TypingAnimationPicker: View {
+    @EnvironmentObject var settings: SettingsStore
+    @Environment(\.dismiss) var dismiss
+    @State private var previewID = UUID()
+    private let sample = "Привет! Я печатаю этот ответ, чтобы показать выбранную анимацию появления текста в OpenVolt."
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                if let bg = settings.bgColor { bg.ignoresSafeArea() }
+                VStack(spacing: 16) {
+                    // Live preview card
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Предпросмотр").font(.caption).foregroundStyle(.secondary)
+                        TypingBody(text: sample, isUser: false, isStreaming: true, onOpenCode: { _,_,_ in })
+                            .id(previewID)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, minHeight: 90, alignment: .topLeading)
+                            .background(settings.cardColor ?? Color(.secondarySystemBackground),
+                                        in: RoundedRectangle(cornerRadius: 14))
+                        Button {
+                            previewID = UUID()
+                        } label: {
+                            Label("Повторить", systemImage: "arrow.clockwise").font(.caption)
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    List {
+                        ForEach(TypingAnimation.allCases) { anim in
+                            Button {
+                                settings.typingAnimation = anim
+                                previewID = UUID()
+                            } label: {
+                                HStack {
+                                    Image(systemName: anim.icon).foregroundStyle(settings.accentColor).frame(width: 28)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(anim.title).foregroundStyle(.primary)
+                                        Text(anim.subtitle).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if settings.typingAnimation == anim {
+                                        Image(systemName: "checkmark.circle.fill").foregroundStyle(settings.accentColor)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .scrollContentBackground(settings.bgColor == nil ? .visible : .hidden)
+                }
+            }
+            .navigationTitle("Анимация печати")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }
+        }
     }
 }

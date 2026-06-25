@@ -143,6 +143,40 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Typing animation
+
+enum TypingAnimation: String, Codable, CaseIterable, Identifiable {
+    case instant, character, word, fade, wave
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .instant:   return "Мгновенно"
+        case .character: return "По буквам"
+        case .word:      return "По словам"
+        case .fade:      return "Плавное появление"
+        case .wave:      return "Волна"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .instant:   return "Текст появляется сразу"
+        case .character: return "Печатает символ за символом"
+        case .word:      return "Слово за словом"
+        case .fade:      return "Текст мягко проявляется"
+        case .wave:      return "Волнообразное появление слов"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .instant:   return "bolt.fill"
+        case .character: return "character.cursor.ibeam"
+        case .word:      return "text.word.spacing"
+        case .fade:      return "sparkles"
+        case .wave:      return "waveform"
+        }
+    }
+}
+
 enum AccentTheme: String, Codable, CaseIterable, Identifiable {
     case volt, cyan, magenta, green, orange, mono, custom
     var id: String { rawValue }

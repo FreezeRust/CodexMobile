@@ -16,6 +16,9 @@ struct ChatView: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showFileImporter = false
     @State private var quoting: String?      // text being quoted in the next message
+    @State private var codeViewer: CodeViewerData?
+    @State private var selectionText: String?
+    @State private var streamingMessageID: UUID?
 
     private var chat: Chat? {
         store.projects.first(where: { $0.id == projectID })?.chats.first(where: { $0.id == chatID })
@@ -42,6 +45,18 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .sheet(isPresented: $showModelPicker) { modelPicker }
+        .sheet(item: $codeViewer) { data in
+            CodeViewerSheet(fileName: data.name, language: data.language, content: data.content) {
+                store.attachFiles([GeneratedFile(name: data.name, language: data.language, content: data.content)],
+                                  projectID: projectID)
+            }
+        }
+        .sheet(item: Binding(get: { selectionText.map { SelText(text: $0) } },
+                             set: { selectionText = $0?.text })) { sel in
+            TextSelectionSheet(fullText: sel.text) { asked in
+                input = "Про этот фрагмент:\n\"\(asked)\"\n\n"
+            }
+        }
         .onChange(of: photoItems) { _, items in Task { await loadPhotos(items) } }
         .fileImporter(isPresented: $showFileImporter,
                       allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -58,6 +73,7 @@ struct ChatView: View {
                     ForEach(chat?.messages ?? []) { msg in
                         MessageBubble(
                             message: msg,
+                            isStreamingThis: streamingMessageID == msg.id,
                             onQuote: { quoting = msg.content },
                             onToggleMark: {
                                 store.updateMessage(msg.id, projectID: projectID, chatID: chatID) {
@@ -65,20 +81,30 @@ struct ChatView: View {
                                 }
                             },
                             onCopy: { UIPasteboard.general.string = msg.content },
+                            onSelectText: { selectionText = msg.content },
                             onPollAnswer: { opt in
                                 store.setPollAnswer(opt, messageID: msg.id, projectID: projectID, chatID: chatID)
                             },
-                            onSaveImage: { att in saveImageAsFile(att) }
+                            onSaveImage: { att in saveImageAsFile(att) },
+                            onOpenCode: { name, lang, content in
+                                codeViewer = CodeViewerData(name: name, language: lang, content: content)
+                            }
                         )
                         .id(msg.id)
+                        .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
+                                                removal: .opacity))
                     }
+                    Color.clear.frame(height: 1).id("BOTTOM")
                 }
                 .padding()
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: chat?.messages.count)
             }
+            // Auto-scroll only nudges to bottom as content grows; user can scroll freely.
             .onChange(of: chat?.messages.last?.content) { _, _ in
-                if let last = chat?.messages.last?.id {
-                    withAnimation { proxy.scrollTo(last, anchor: .bottom) }
-                }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("BOTTOM", anchor: .bottom) }
+            }
+            .onChange(of: chat?.messages.count) { _, _ in
+                withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("BOTTOM", anchor: .bottom) }
             }
         }
     }
@@ -323,7 +349,8 @@ struct ChatView: View {
         }
 
         isStreaming = true
-        defer { isStreaming = false }
+        streamingMessageID = currentAssistantID()
+        defer { isStreaming = false; streamingMessageID = nil }
 
         var history: [Message] = []
         if !settings.systemPrompt.isEmpty {
@@ -372,82 +399,152 @@ struct ChatView: View {
     }
 }
 
+// MARK: - Helper identifiable wrappers for sheets
+
+struct CodeViewerData: Identifiable {
+    let id = UUID()
+    let name: String
+    let language: String
+    let content: String
+}
+struct SelText: Identifiable { let id = UUID(); let text: String }
+
 // MARK: - Message bubble
 
 struct MessageBubble: View {
     @EnvironmentObject var settings: SettingsStore
     let message: Message
+    var isStreamingThis: Bool
     var onQuote: () -> Void
     var onToggleMark: () -> Void
     var onCopy: () -> Void
+    var onSelectText: () -> Void
     var onPollAnswer: (String) -> Void
     var onSaveImage: (Attachment) -> Void
+    var onOpenCode: (_ name: String, _ language: String, _ content: String) -> Void
 
     var isUser: Bool { message.role == .user }
 
     var body: some View {
-        HStack {
-            if isUser { Spacer(minLength: 40) }
+        HStack(alignment: .top, spacing: 8) {
+            if isUser { Spacer(minLength: 36) }
+            if !isUser { avatar }
             VStack(alignment: .leading, spacing: 8) {
-                // Quoted text
+                if !isUser { roleHeader }
                 if let q = message.quoted, !q.isEmpty {
                     HStack(spacing: 6) {
-                        Rectangle().fill(.white.opacity(0.5)).frame(width: 2)
+                        RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.55)).frame(width: 2)
                         Text(q).font(.caption2).italic().lineLimit(3)
+                            .foregroundStyle(isUser ? .white.opacity(0.85) : .secondary)
                     }
                 }
-                // Attachments (images preview + files)
-                ForEach(message.attachments) { a in
-                    if a.kind == .image, let data = Data(base64Encoded: a.base64),
-                       let ui = UIImage(data: data) {
-                        Image(uiImage: ui)
-                            .resizable().scaledToFit()
-                            .frame(maxWidth: 220, maxHeight: 220)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .contextMenu {
-                                Button { onSaveImage(a) } label: { Label("Сохранить в файлы", systemImage: "square.and.arrow.down") }
-                            }
-                    } else {
-                        Label(a.fileName, systemImage: "doc")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                // Text
-                if !message.content.isEmpty || message.attachments.isEmpty {
-                    Text(message.content.isEmpty ? "…" : message.content)
-                        .textSelection(.enabled)
-                        .underline(message.isMarked)
-                        .foregroundStyle(isUser ? .white : .primary)
-                }
-                // Poll
+                attachmentsView
+                contentView
                 if let poll = message.poll {
                     PollView(poll: poll, accent: settings.accentColor) { onPollAnswer($0) }
+                }
+                if message.isMarked {
+                    Label("Подчёркнуто", systemImage: "highlighter")
+                        .font(.caption2).foregroundStyle(settings.accentColor)
                 }
             }
             .padding(12)
             .background(bubbleBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(alignment: .topTrailing) {
-                if message.isMarked {
-                    Image(systemName: "highlighter").font(.caption2)
-                        .foregroundStyle(settings.accentColor)
-                        .padding(6)
-                }
-            }
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(isUser ? .clear : .white.opacity(0.06))
+            )
             .contextMenu {
                 Button { onCopy() } label: { Label("Копировать", systemImage: "doc.on.doc") }
+                Button { onSelectText() } label: { Label("Выбор текста", systemImage: "selection.pin.in.out") }
                 Button { onQuote() } label: { Label("Цитировать", systemImage: "quote.opening") }
                 Button { onToggleMark() } label: {
                     Label(message.isMarked ? "Снять подчёркивание" : "Подчеркнуть", systemImage: "highlighter")
                 }
             }
-            if !isUser { Spacer(minLength: 40) }
+            if isUser { avatar }
+            if !isUser { Spacer(minLength: 36) }
+        }
+    }
+
+    private var avatar: some View {
+        ZStack {
+            Circle().fill(isUser ? AnyShapeStyle(settings.accentGradient)
+                                 : AnyShapeStyle(Color.gray.opacity(0.25)))
+                .frame(width: 28, height: 28)
+            Image(systemName: isUser ? "person.fill" : "sparkle")
+                .font(.caption2)
+                .foregroundStyle(isUser ? .white : settings.accentColor)
+        }
+    }
+
+    private var roleHeader: some View {
+        HStack(spacing: 6) {
+            Text("Ассистент").font(.caption2.bold()).foregroundStyle(.secondary)
+            if isStreamingThis {
+                TypingDots(color: settings.accentColor)
+            }
+        }
+    }
+
+    @ViewBuilder private var attachmentsView: some View {
+        ForEach(message.attachments) { a in
+            if a.kind == .image, let data = Data(base64Encoded: a.base64), let ui = UIImage(data: data) {
+                Image(uiImage: ui)
+                    .resizable().scaledToFit()
+                    .frame(maxWidth: 230, maxHeight: 230)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.1)))
+                    .contextMenu {
+                        Button { onSaveImage(a) } label: { Label("Сохранить в файлы", systemImage: "square.and.arrow.down") }
+                    }
+            } else {
+                Label(a.fileName, systemImage: "paperclip")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var contentView: some View {
+        if message.content.isEmpty && message.attachments.isEmpty {
+            TypingDots(color: isUser ? .white : settings.accentColor)
+        } else if isUser {
+            Text(message.content)
+                .foregroundStyle(.white)
+                .underline(message.isMarked)
+        } else {
+            TypingBody(text: message.content, isUser: false, isStreaming: isStreamingThis,
+                       onOpenCode: onOpenCode)
+                .underline(message.isMarked)
         }
     }
 
     @ViewBuilder private var bubbleBackground: some View {
         if isUser { settings.accentGradient }
         else { (settings.cardColor ?? Color(.secondarySystemBackground)) }
+    }
+}
+
+// MARK: - Typing dots
+
+struct TypingDots: View {
+    let color: Color
+    @State private var phase = 0
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3) { i in
+                Circle().fill(color)
+                    .frame(width: 6, height: 6)
+                    .opacity(phase == i ? 1 : 0.35)
+                    .scaleEffect(phase == i ? 1.0 : 0.7)
+            }
+        }
+        .onAppear {
+            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+                withAnimation(.easeInOut(duration: 0.25)) { phase = (phase + 1) % 3 }
+            }
+        }
     }
 }
 
