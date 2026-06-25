@@ -20,11 +20,9 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        working-directory: CodexMobile
         run: xcodegen generate
 
       - name: Build (no codesign)
-        working-directory: CodexMobile
         run: |
           xcodebuild \
             -project CodexMobile.xcodeproj \
@@ -38,7 +36,6 @@ jobs:
             clean build
 
       - name: Package into .ipa
-        working-directory: CodexMobile
         run: |
           APP_PATH="build/Build/Products/Release-iphoneos/CodexMobile.app"
           mkdir -p Payload
@@ -50,5 +47,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CodexMobile-unsigned-ipa
-          path: CodexMobile/CodexMobile.ipa
+          path: CodexMobile.ipa
           if-no-files-found: error
