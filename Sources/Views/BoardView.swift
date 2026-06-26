@@ -5,141 +5,270 @@ struct BoardView: View {
     @EnvironmentObject var settings: SettingsStore
     let projectID: UUID
 
-    @State private var showNewColumn = false
-    @State private var newColumnTitle = ""
-    @State private var editingCard: EditingCard?
+    // Canvas transform
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    // Interaction state
+    @State private var editing: BoardNode?
+    @State private var showNew = false
+    @State private var newTitle = ""
+    @State private var connectingFrom: UUID?      // node id we're drawing a rope from
+
+    private let cardW: CGFloat = 170
+    private let cardH: CGFloat = 78
 
     private var board: Board { store.project(projectID)?.board ?? Board() }
 
     var body: some View {
         ZStack {
-            if let bg = settings.bgColor { bg.ignoresSafeArea() }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(board.columns) { column in
-                        columnView(column)
-                    }
-                    addColumnButton
-                }
-                .padding(16)
-            }
+            (settings.bgColor ?? Color(hex: 0x0D0A1F)).ignoresSafeArea()
+            dotGrid
+
+            canvasContent
+                .scaleEffect(scale)
+                .offset(offset)
+                .gesture(panGesture.simultaneously(with: zoomGesture))
+
+            controls
         }
         .navigationTitle("Доска")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Новая колонка", isPresented: $showNewColumn) {
-            TextField("Название", text: $newColumnTitle)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { resetView() } label: { Image(systemName: "scope") }
+            }
+        }
+        .alert("Новая задача", isPresented: $showNew) {
+            TextField("Заголовок", text: $newTitle)
             Button("Создать") {
-                let t = newColumnTitle.trimmingCharacters(in: .whitespaces)
-                if !t.isEmpty { store.addColumn(projectID: projectID, title: t) }
-                newColumnTitle = ""
+                let t = newTitle.trimmingCharacters(in: .whitespaces)
+                if !t.isEmpty {
+                    // place near current view center in canvas coords
+                    let cx = (-offset.width / scale) + 140
+                    let cy = (-offset.height / scale) + 160
+                    store.addNode(projectID: projectID, title: t, x: Double(cx), y: Double(cy))
+                }
+                newTitle = ""
             }
-            Button("Отмена", role: .cancel) { newColumnTitle = "" }
+            Button("Отмена", role: .cancel) { newTitle = "" }
         }
-        .sheet(item: $editingCard) { ec in
-            CardEditor(projectID: projectID, columnID: ec.columnID, card: ec.card)
+        .sheet(item: $editing) { node in
+            NodeEditor(projectID: projectID, node: node)
         }
+        .overlay(alignment: .top) { connectingBanner }
     }
 
-    private func columnView(_ column: BoardColumn) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(column.title).font(.headline)
-                Spacer()
-                Text("\(column.cards.count)")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(.ultraThinMaterial, in: Capsule())
-                Menu {
-                    Button { editingCard = EditingCard(columnID: column.id, card: nil) } label: {
-                        Label("Добавить карточку", systemImage: "plus")
-                    }
-                    Button(role: .destructive) { store.deleteColumn(column.id, projectID: projectID) } label: {
-                        Label("Удалить колонку", systemImage: "trash")
-                    }
-                } label: { Image(systemName: "ellipsis").foregroundStyle(.secondary) }
-            }
+    // MARK: - Canvas content (ropes + nodes)
 
-            ForEach(column.cards) { card in
-                cardView(card, columnID: column.id)
+    private var canvasContent: some View {
+        ZStack(alignment: .topLeading) {
+            // Ropes
+            ForEach(board.edges) { edge in
+                if let a = node(edge.from), let b = node(edge.to) {
+                    RopeShape(from: center(a), to: center(b))
+                        .stroke(settings.accentColor.opacity(0.8),
+                                style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                }
             }
-
-            Button { editingCard = EditingCard(columnID: column.id, card: nil) } label: {
-                Label("Карточка", systemImage: "plus")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            // Live rope while connecting
+            if let fromID = connectingFrom, let a = node(fromID) {
+                RopeShape(from: center(a), to: center(a))
+                    .stroke(settings.accentColor.opacity(0.4), style: StrokeStyle(lineWidth: 2, dash: [6]))
+            }
+            // Nodes
+            ForEach(board.nodes) { node in
+                nodeView(node)
+                    .position(x: CGFloat(node.x) + cardW/2, y: CGFloat(node.y) + cardH/2)
             }
         }
-        .padding(12)
-        .frame(width: 260, alignment: .top)
-        .background(settings.cardColor ?? Color(.secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 16))
+        .frame(width: 4000, height: 4000, alignment: .topLeading)
     }
 
-    private func cardView(_ card: BoardCard, columnID: UUID) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top) {
-                Image(systemName: card.done ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(card.done ? settings.accentColor : .secondary)
-                    .onTapGesture {
-                        var c = card; c.done.toggle()
-                        store.updateCard(c, columnID: columnID, projectID: projectID)
-                    }
-                Text(card.title)
-                    .font(.subheadline)
-                    .strikethrough(card.done)
-                    .foregroundStyle(card.done ? .secondary : .primary)
-                Spacer()
+    private func nodeView(_ node: BoardNode) -> some View {
+        let isConnectSource = connectingFrom == node.id
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: node.done ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(node.done ? settings.accentColor : .secondary)
+                    .onTapGesture { store.toggleNodeDone(node.id, projectID: projectID) }
+                Text(node.title).font(.subheadline.bold())
+                    .strikethrough(node.done).lineLimit(2)
+                Spacer(minLength: 0)
             }
-            if !card.detail.isEmpty {
-                Text(card.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+            if !node.detail.isEmpty {
+                Text(node.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
         }
         .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(settings.bgColor ?? Color(.tertiarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.06)))
-        .onTapGesture { editingCard = EditingCard(columnID: columnID, card: card) }
-        .contextMenu {
-            // Move to another column
-            ForEach(board.columns.filter { $0.id != columnID }) { target in
-                Button { store.moveCard(card.id, toColumn: target.id, projectID: projectID) } label: {
-                    Label("В «\(target.title)»", systemImage: "arrow.right")
-                }
+        .frame(width: cardW, height: cardH, alignment: .topLeading)
+        .background(settings.cardColor ?? Color(.secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(isConnectSource ? settings.accentColor : .white.opacity(0.08),
+                        lineWidth: isConnectSource ? 2.5 : 1)
+        )
+        .overlay(alignment: .bottomTrailing) { connectHandle(node) }
+        .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+        .gesture(dragGesture(node))
+        .onTapGesture {
+            if let from = connectingFrom {
+                if from != node.id { store.connectNodes(from, node.id, projectID: projectID) }
+                connectingFrom = nil
+            } else {
+                editing = node
             }
-            Button(role: .destructive) { store.deleteCard(card.id, columnID: columnID, projectID: projectID) } label: {
+        }
+        .contextMenu {
+            Button { connectingFrom = node.id } label: { Label("Соединить тросом", systemImage: "link") }
+            Button { editing = node } label: { Label("Изменить", systemImage: "pencil") }
+            Button(role: .destructive) { store.deleteNode(node.id, projectID: projectID) } label: {
                 Label("Удалить", systemImage: "trash")
             }
         }
     }
 
-    private var addColumnButton: some View {
-        Button { showNewColumn = true } label: {
-            VStack(spacing: 8) {
-                Image(systemName: "plus.circle.fill").font(.title2)
-                Text("Колонка").font(.caption)
+    private func connectHandle(_ node: BoardNode) -> some View {
+        Image(systemName: "point.topleft.down.to.point.bottomright.curvepath.fill")
+            .font(.caption2)
+            .foregroundStyle(.white)
+            .padding(5)
+            .background(settings.accentGradient, in: Circle())
+            .offset(x: 6, y: 6)
+            .onTapGesture {
+                if connectingFrom == node.id { connectingFrom = nil } else { connectingFrom = node.id }
             }
-            .foregroundStyle(settings.accentColor)
-            .frame(width: 120, height: 90)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Gestures
+
+    private func dragGesture(_ node: BoardNode) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                let nx = node.x + Double(value.translation.width / scale)
+                let ny = node.y + Double(value.translation.height / scale)
+                store.moveNode(node.id, to: nx, ny, projectID: projectID)
+            }
+    }
+
+    private var panGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                offset = CGSize(width: lastOffset.width + value.translation.width,
+                                height: lastOffset.height + value.translation.height)
+            }
+            .onEnded { _ in lastOffset = offset }
+    }
+
+    private var zoomGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in scale = min(max(lastScale * value, 0.3), 3) }
+            .onEnded { _ in lastScale = scale }
+    }
+
+    // MARK: - Controls overlay
+
+    private var controls: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                VStack(spacing: 12) {
+                    zoomButton("plus.magnifyingglass") { setScale(scale + 0.2) }
+                    zoomButton("minus.magnifyingglass") { setScale(scale - 0.2) }
+                    Button { showNew = true } label: {
+                        Image(systemName: "plus")
+                            .font(.title2.bold()).foregroundStyle(.white)
+                            .frame(width: 54, height: 54)
+                            .background(settings.accentGradient, in: Circle())
+                            .shadow(color: settings.accentColor.opacity(0.5), radius: 8, y: 3)
+                    }
+                }
+                .padding(20)
+            }
         }
-        .buttonStyle(.plain)
+    }
+
+    private func zoomButton(_ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.body)
+                .frame(width: 40, height: 40)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+    }
+
+    @ViewBuilder private var connectingBanner: some View {
+        if connectingFrom != nil {
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                Text("Выбери карточку, чтобы соединить тросом")
+                Button("Отмена") { connectingFrom = nil }.font(.caption.bold())
+            }
+            .font(.caption).padding(10)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.top, 8)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var dotGrid: some View {
+        GeometryReader { _ in
+            Canvas { ctx, size in
+                let step: CGFloat = 28 * scale
+                guard step > 6 else { return }
+                let ox = offset.width.truncatingRemainder(dividingBy: step)
+                let oy = offset.height.truncatingRemainder(dividingBy: step)
+                var x = ox
+                while x < size.width { var y = oy
+                    while y < size.height {
+                        ctx.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.5, height: 1.5)),
+                                 with: .color(.gray.opacity(0.25)))
+                        y += step }
+                    x += step }
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    private func node(_ id: UUID) -> BoardNode? { board.nodes.first { $0.id == id } }
+    private func center(_ n: BoardNode) -> CGPoint { CGPoint(x: CGFloat(n.x) + cardW/2, y: CGFloat(n.y) + cardH/2) }
+    private func setScale(_ s: CGFloat) { withAnimation(.easeOut(duration: 0.2)) { scale = min(max(s, 0.3), 3); lastScale = scale } }
+    private func resetView() {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
+        }
     }
 }
 
-struct EditingCard: Identifiable {
-    let id = UUID()
-    let columnID: UUID
-    let card: BoardCard?
+// MARK: - Rope (curved connector)
+
+struct RopeShape: Shape {
+    let from: CGPoint
+    let to: CGPoint
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: from)
+        // sagging rope: control points pulled downward for a cable look
+        let dx = to.x - from.x
+        let midSag = max(30, abs(dx) * 0.25)
+        let c1 = CGPoint(x: from.x + dx * 0.33, y: max(from.y, to.y) + midSag)
+        let c2 = CGPoint(x: from.x + dx * 0.66, y: max(from.y, to.y) + midSag)
+        p.addCurve(to: to, control1: c1, control2: c2)
+        return p
+    }
 }
 
-struct CardEditor: View {
+// MARK: - Node editor
+
+struct NodeEditor: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
     let projectID: UUID
-    let columnID: UUID
-    let card: BoardCard?
+    let node: BoardNode
 
     @State private var title = ""
     @State private var detail = ""
@@ -153,28 +282,24 @@ struct CardEditor: View {
                     TextField("Описание (шаги, детали)", text: $detail, axis: .vertical).lineLimit(3...10)
                     Toggle("Выполнено", isOn: $done)
                 }
+                Section {
+                    Button(role: .destructive) {
+                        store.deleteNode(node.id, projectID: projectID); dismiss()
+                    } label: { Label("Удалить задачу", systemImage: "trash") }
+                }
             }
-            .navigationTitle(card == nil ? "Новая карточка" : "Карточка")
+            .navigationTitle("Карточка")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Сохранить") { save() }.disabled(title.isEmpty)
+                    Button("Сохранить") {
+                        var n = node; n.title = title; n.detail = detail; n.done = done
+                        store.updateNode(n, projectID: projectID); dismiss()
+                    }.disabled(title.isEmpty)
                 }
             }
-            .onAppear {
-                if let c = card { title = c.title; detail = c.detail; done = c.done }
-            }
+            .onAppear { title = node.title; detail = node.detail; done = node.done }
         }
-    }
-
-    private func save() {
-        if var c = card {
-            c.title = title; c.detail = detail; c.done = done
-            store.updateCard(c, columnID: columnID, projectID: projectID)
-        } else {
-            store.addCard(projectID: projectID, columnID: columnID, title: title, detail: detail)
-        }
-        dismiss()
     }
 }

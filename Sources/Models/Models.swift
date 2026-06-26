@@ -110,31 +110,28 @@ struct Project: Identifiable, Codable, Hashable {
     var terminalHistory: [TerminalEntry] = []
 }
 
-// MARK: - Board (доска задач)
+// MARK: - Board (холст задач, как Obsidian Canvas)
 
 struct Board: Codable, Hashable {
-    var columns: [BoardColumn] = []
-    static func makeDefault() -> Board {
-        Board(columns: [
-            BoardColumn(title: "К выполнению"),
-            BoardColumn(title: "В работе"),
-            BoardColumn(title: "Готово")
-        ])
-    }
+    var nodes: [BoardNode] = []
+    var edges: [BoardEdge] = []
+    static func makeDefault() -> Board { Board() }
 }
 
-struct BoardColumn: Identifiable, Codable, Hashable {
-    var id: UUID = UUID()
-    var title: String
-    var cards: [BoardCard] = []
-}
-
-struct BoardCard: Identifiable, Codable, Hashable {
+struct BoardNode: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
     var title: String
     var detail: String = ""
     var done: Bool = false
+    var x: Double = 0          // canvas position
+    var y: Double = 0
     var createdAt: Date = Date()
+}
+
+struct BoardEdge: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var from: UUID
+    var to: UUID
 }
 
 // MARK: - Terminal entry (виртуальный терминал)

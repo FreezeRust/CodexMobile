@@ -183,70 +183,60 @@ final class AppStore: ObservableObject {
         change(&projects[p]); save()
     }
 
-    func addColumn(projectID: UUID, title: String) {
-        withProject(projectID) { $0.board.columns.append(BoardColumn(title: title)) }
-    }
-    func renameColumn(_ columnID: UUID, projectID: UUID, title: String) {
-        withProject(projectID) {
-            if let c = $0.board.columns.firstIndex(where: { $0.id == columnID }) { $0.board.columns[c].title = title }
-        }
-    }
-    func deleteColumn(_ columnID: UUID, projectID: UUID) {
-        withProject(projectID) { $0.board.columns.removeAll { $0.id == columnID } }
-    }
-    func addCard(projectID: UUID, columnID: UUID, title: String, detail: String = "") {
-        withProject(projectID) {
-            if let c = $0.board.columns.firstIndex(where: { $0.id == columnID }) {
-                $0.board.columns[c].cards.append(BoardCard(title: title, detail: detail))
-            }
-        }
-    }
-    func updateCard(_ card: BoardCard, columnID: UUID, projectID: UUID) {
-        withProject(projectID) {
-            if let c = $0.board.columns.firstIndex(where: { $0.id == columnID }),
-               let k = $0.board.columns[c].cards.firstIndex(where: { $0.id == card.id }) {
-                $0.board.columns[c].cards[k] = card
-            }
-        }
-    }
-    func deleteCard(_ cardID: UUID, columnID: UUID, projectID: UUID) {
-        withProject(projectID) {
-            if let c = $0.board.columns.firstIndex(where: { $0.id == columnID }) {
-                $0.board.columns[c].cards.removeAll { $0.id == cardID }
-            }
-        }
-    }
-    /// Move a card to another column (used by drag and by AI).
-    func moveCard(_ cardID: UUID, toColumn target: UUID, projectID: UUID) {
+    @discardableResult
+    func addNode(projectID: UUID, title: String, detail: String = "",
+                 x: Double? = nil, y: Double? = nil) -> UUID {
+        let id = UUID()
         withProject(projectID) { proj in
-            var moved: BoardCard?
-            for c in proj.board.columns.indices {
-                if let k = proj.board.columns[c].cards.firstIndex(where: { $0.id == cardID }) {
-                    moved = proj.board.columns[c].cards.remove(at: k); break
-                }
-            }
-            if let moved, let t = proj.board.columns.firstIndex(where: { $0.id == target }) {
-                proj.board.columns[t].cards.append(moved)
+            let count = proj.board.nodes.count
+            let nx = x ?? Double(60 + (count % 3) * 200)
+            let ny = y ?? Double(60 + (count / 3) * 150)
+            proj.board.nodes.append(BoardNode(id: id, title: title, detail: detail, x: nx, y: ny))
+        }
+        return id
+    }
+    func updateNode(_ node: BoardNode, projectID: UUID) {
+        withProject(projectID) {
+            if let i = $0.board.nodes.firstIndex(where: { $0.id == node.id }) { $0.board.nodes[i] = node }
+        }
+    }
+    func moveNode(_ id: UUID, to x: Double, _ y: Double, projectID: UUID) {
+        withProject(projectID) {
+            if let i = $0.board.nodes.firstIndex(where: { $0.id == id }) {
+                $0.board.nodes[i].x = x; $0.board.nodes[i].y = y
             }
         }
     }
-    /// Find a card by fuzzy title match (for AI commands).
-    func findCard(titled query: String, projectID: UUID) -> (card: BoardCard, columnID: UUID)? {
+    func deleteNode(_ id: UUID, projectID: UUID) {
+        withProject(projectID) {
+            $0.board.nodes.removeAll { $0.id == id }
+            $0.board.edges.removeAll { $0.from == id || $0.to == id }
+        }
+    }
+    func toggleNodeDone(_ id: UUID, projectID: UUID) {
+        withProject(projectID) {
+            if let i = $0.board.nodes.firstIndex(where: { $0.id == id }) { $0.board.nodes[i].done.toggle() }
+        }
+    }
+    /// Connect two nodes with a rope (toggles off if it already exists).
+    func connectNodes(_ a: UUID, _ b: UUID, projectID: UUID) {
+        guard a != b else { return }
+        withProject(projectID) { proj in
+            if let idx = proj.board.edges.firstIndex(where: {
+                ($0.from == a && $0.to == b) || ($0.from == b && $0.to == a)
+            }) {
+                proj.board.edges.remove(at: idx)
+            } else {
+                proj.board.edges.append(BoardEdge(from: a, to: b))
+            }
+        }
+    }
+    /// Fuzzy node lookup (for AI commands).
+    func findNode(titled query: String, projectID: UUID) -> BoardNode? {
         guard let proj = project(projectID) else { return nil }
         let q = query.lowercased()
-        for col in proj.board.columns {
-            if let card = col.cards.first(where: { $0.title.lowercased() == q })
-                ?? col.cards.first(where: { $0.title.lowercased().contains(q) }) {
-                return (card, col.id)
-            }
-        }
-        return nil
-    }
-    func columnID(named name: String, projectID: UUID) -> UUID? {
-        guard let proj = project(projectID) else { return nil }
-        let q = name.lowercased()
-        return proj.board.columns.first(where: { $0.title.lowercased() == q })?.id
-            ?? proj.board.columns.first(where: { $0.title.lowercased().contains(q) })?.id
+        return proj.board.nodes.first(where: { $0.title.lowercased() == q })
+            ?? proj.board.nodes.first(where: { $0.title.lowercased().contains(q) })
     }
 
     // MARK: - Terminal
@@ -323,7 +313,7 @@ final class SettingsStore: ObservableObject {
             Опрос: если нужно уточнить выбор у пользователя, выведи блок ```poll с JSON {"question":"...","options":["A","B"]}. ВАЖНО: после опроса ОСТАНОВИСЬ и жди ответ пользователя. Когда пользователь пришлёт «Выбран вариант: X», продолжай с учётом этого.
             Задачи: для сложного запроса сначала составь план в блоке ```tasks с JSON-массивом строк, например ["Создать HTML","Добавить CSS","Написать JS"]. Затем выполняй задачи по очереди.
             Терминал: можешь выполнять команды виртуального терминала — выведи блок ```run и в нём по одной команде на строке (ls, tree, cat <файл>, mkdir <путь>, touch <файл>, echo текст > файл, mv, rm, pwd). Результат вернётся тебе.
-            Доска задач: ты видишь доску в контексте. Чтобы менять её, выведи блок ```board с операциями по одной на строке: add "Колонка" | "Заголовок" | "описание"; done "Заголовок"; move "Заголовок" -> "Колонка"; del "Заголовок". Двигай карточки по колонкам по мере выполнения шагов.
+            Доска задач (холст): ты видишь узлы и связи в контексте. Чтобы менять доску, выведи блок ```board с операциями по одной на строке: add "Заголовок" | "описание"; done "Заголовок"; del "Заголовок"; link "A" -> "B" (соединить задачи тросом). Разбивай большую цель на узлы и связывай их в логическом порядке.
             """
         customAccentHex = UserDefaults.standard.string(forKey: "custom_accent") ?? "#6B55F4"
         customBackgroundHex = UserDefaults.standard.string(forKey: "custom_bg") ?? "#0D0A1F"

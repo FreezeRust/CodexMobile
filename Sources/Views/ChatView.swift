@@ -354,14 +354,19 @@ struct ChatView: View {
                 parts.append("Файлы проекта: \(names)")
             }
             // Board state for the AI to read & act on
-            if !project.board.columns.isEmpty {
-                var b = "Доска задач:\n"
-                for col in project.board.columns {
-                    b += "[\(col.title)]\n"
-                    for card in col.cards {
-                        b += "  - \(card.done ? "✓" : "○") \(card.title)"
-                        if !card.detail.isEmpty { b += " — \(card.detail)" }
-                        b += "\n"
+            if !project.board.nodes.isEmpty {
+                var b = "Доска задач (узлы):\n"
+                for n in project.board.nodes {
+                    b += "  - \(n.done ? "✓" : "○") \(n.title)"
+                    if !n.detail.isEmpty { b += " — \(n.detail)" }
+                    b += "\n"
+                }
+                if !project.board.edges.isEmpty {
+                    b += "Связи:\n"
+                    for e in project.board.edges {
+                        let a = project.board.nodes.first { $0.id == e.from }?.title ?? "?"
+                        let c = project.board.nodes.first { $0.id == e.to }?.title ?? "?"
+                        b += "  \(a) — \(c)\n"
                     }
                 }
                 parts.append(b)
@@ -501,7 +506,7 @@ struct ChatView: View {
     }
 
     /// Parse one board operation line from the AI.
-    /// Formats: add "Col" | "Title" | "detail"  ; done "Title" ; move "Title" -> "Col" ; del "Title"
+    /// Formats: add "Title" | "detail" ; done "Title" ; del "Title" ; link "A" -> "B"
     @MainActor private func applyBoardOp(_ raw: String) {
         let line = raw.trimmingCharacters(in: .whitespaces)
         func quoted(_ s: String) -> [String] {
@@ -512,24 +517,19 @@ struct ChatView: View {
         let args = quoted(line)
         let lower = line.lowercased()
         if lower.hasPrefix("add") {
-            guard args.count >= 2, let col = store.columnID(named: args[0], projectID: projectID) else { return }
-            store.addCard(projectID: projectID, columnID: col, title: args[1],
-                          detail: args.count >= 3 ? args[2] : "")
+            guard let title = args.first else { return }
+            store.addNode(projectID: projectID, title: title, detail: args.count >= 2 ? args[1] : "")
         } else if lower.hasPrefix("done") {
-            guard let title = args.first, let found = store.findCard(titled: title, projectID: projectID) else { return }
-            var c = found.card; c.done = true
-            store.updateCard(c, columnID: found.columnID, projectID: projectID)
-            if let doneCol = store.columnID(named: "готово", projectID: projectID) {
-                store.moveCard(c.id, toColumn: doneCol, projectID: projectID)
-            }
-        } else if lower.hasPrefix("move") {
+            guard let title = args.first, let n = store.findNode(titled: title, projectID: projectID) else { return }
+            store.toggleNodeDone(n.id, projectID: projectID)
+        } else if lower.hasPrefix("link") || lower.hasPrefix("connect") {
             guard args.count >= 2,
-                  let found = store.findCard(titled: args[0], projectID: projectID),
-                  let target = store.columnID(named: args[1], projectID: projectID) else { return }
-            store.moveCard(found.card.id, toColumn: target, projectID: projectID)
+                  let a = store.findNode(titled: args[0], projectID: projectID),
+                  let b = store.findNode(titled: args[1], projectID: projectID) else { return }
+            store.connectNodes(a.id, b.id, projectID: projectID)
         } else if lower.hasPrefix("del") {
-            guard let title = args.first, let found = store.findCard(titled: title, projectID: projectID) else { return }
-            store.deleteCard(found.card.id, columnID: found.columnID, projectID: projectID)
+            guard let title = args.first, let n = store.findNode(titled: title, projectID: projectID) else { return }
+            store.deleteNode(n.id, projectID: projectID)
         }
     }
 
