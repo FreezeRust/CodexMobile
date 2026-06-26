@@ -60,7 +60,26 @@ struct VirtualTerminal {
             source = f.content
         }
 
-        let rt = JSRuntime()
+        let pid = projectID
+        let st = store
+        let rt = JSRuntime(
+            projectName: projectName,
+            readFile: { path in
+                st.project(pid)?.files.first(where: { $0.name == path && !$0.isDirectory })?.content
+            },
+            writeFile: { path, content in
+                if let f = st.project(pid)?.files.first(where: { $0.name == path && !$0.isDirectory }) {
+                    st.updateFile(f.id, projectID: pid, content: content, note: "node fs")
+                } else {
+                    let ext = (path as NSString).pathExtension
+                    st.attachFiles([GeneratedFile(name: path, language: ext.isEmpty ? "text" : ext,
+                                                  content: content)], projectID: pid)
+                }
+            },
+            listFiles: {
+                (st.project(pid)?.files ?? []).filter { !$0.isDirectory }.map { $0.name }
+            }
+        )
         let result = rt.run(source)
         return result
     }
@@ -83,13 +102,16 @@ struct VirtualTerminal {
           touch <файл>     создать пустой файл
           mv <из> <в>      переименовать/переместить
           rm <путь>        удалить файл или папку
-          node <файл.js>   выполнить JavaScript-файл (реально)
+          node <файл.js>   выполнить JS-файл (реально)
           node -e "код"    выполнить JS-код
           pwd              текущий проект
           clear            очистить терминал
 
-        Примечание: настоящие python/git/system недоступны на iOS
-        (запрет песочницы). JavaScript выполняется по-настоящему.
+        Node-среда: console, fs (readFileSync/writeFileSync/readdirSync),
+        require('./module'), require('fs'/'path'/'util'/'assert'),
+        process, fetch (реальная сеть), setTimeout.
+        Настоящие python/git недоступны на iOS (запрет песочницы).
+        С включённым JIT в SideStore JS работает на полной скорости.
         """
     }
 
