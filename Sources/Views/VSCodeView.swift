@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 
 /// A VS Code–style IDE interface adapted for iPhone (landscape-friendly).
 struct VSCodeView: View {
@@ -34,6 +36,11 @@ struct VSCodeView: View {
     @State private var aiInput = ""
     @State private var aiMessages: [Message] = []
     @State private var aiBusy = false
+    @State private var aiSelection: ModelSelection?
+    @State private var showAIModelPicker = false
+    @State private var aiAttachments: [Attachment] = []
+    @State private var aiPhotoItems: [PhotosPickerItem] = []
+    @State private var showAIFileImporter = false
 
     // palette
     private let cActivity = Color(hex: 0x333333)
@@ -490,29 +497,32 @@ struct VSCodeView: View {
 
     private var aiPanel: some View {
         VStack(spacing: 0) {
-            HStack {
+            // Header with model selector
+            HStack(spacing: 8) {
                 Image(systemName: "sparkles").foregroundStyle(cStatus)
-                Text("ИИ-АССИСТЕНТ").font(.system(size: 11, weight: .semibold)).foregroundStyle(cText)
+                Button { showAIModelPicker = true } label: {
+                    HStack(spacing: 4) {
+                        Text(currentAIModelLabel).font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(cText).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.system(size: 8)).foregroundStyle(cMuted)
+                    }
+                }
                 Spacer()
+                Button { aiMessages.removeAll() } label: {
+                    Image(systemName: "trash").font(.caption2).foregroundStyle(cMuted)
+                }
                 Button { aiOpen = false } label: { Image(systemName: "xmark").font(.caption2).foregroundStyle(cMuted) }
             }
             .padding(.horizontal, 12).padding(.vertical, 8).background(cTabBar)
+
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(aiMessages) { m in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(m.role == .user ? "Ты" : "ИИ")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(m.role == .user ? cStatus : Color(hex: 0x4EC9B0))
-                                Text(m.content.isEmpty ? "…" : m.content)
-                                    .font(.caption).foregroundStyle(cText).textSelection(.enabled)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(m.role == .user ? Color.white.opacity(0.05) : cSidebar)
-                            .cornerRadius(8)
+                        if aiMessages.isEmpty {
+                            Text("Спроси ИИ про код, прикрепи фото или файл — он видит открытый файл проекта.")
+                                .font(.caption2).foregroundStyle(cMuted).padding(.top, 8)
                         }
+                        ForEach(aiMessages) { m in aiBubble(m) }
                         Color.clear.frame(height: 1).id("aiend")
                     }.padding(10)
                 }
@@ -520,19 +530,123 @@ struct VSCodeView: View {
                     withAnimation { proxy.scrollTo("aiend", anchor: .bottom) }
                 }
             }
+
+            // Pending attachments strip
+            if !aiAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(aiAttachments) { a in
+                            HStack(spacing: 4) {
+                                Image(systemName: a.kind == .image ? "photo.fill" : "doc.fill").font(.system(size: 9))
+                                Text(shortName(a.fileName)).font(.system(size: 9)).lineLimit(1)
+                                Button { aiAttachments.removeAll { $0.id == a.id } } label: {
+                                    Image(systemName: "xmark.circle.fill").font(.system(size: 9))
+                                }
+                            }
+                            .foregroundStyle(cText)
+                            .padding(.horizontal, 7).padding(.vertical, 4)
+                            .background(Color(hex: 0x3C3C3C)).cornerRadius(6)
+                        }
+                    }.padding(.horizontal, 10)
+                }
+                .padding(.vertical, 5).background(cSidebar)
+            }
+
+            // Input row: media + text + send
             HStack(spacing: 6) {
+                Menu {
+                    PhotosPicker(selection: $aiPhotoItems, matching: .images) {
+                        Label("Фото", systemImage: "photo")
+                    }
+                    Button { showAIFileImporter = true } label: { Label("Файл", systemImage: "doc") }
+                } label: {
+                    Image(systemName: "plus.circle.fill").foregroundStyle(cStatus).font(.title3)
+                }
                 TextField("Спроси про код…", text: $aiInput, axis: .vertical)
                     .textFieldStyle(.plain).font(.caption).foregroundStyle(cText)
                     .lineLimit(1...4)
                     .padding(8).background(Color(hex: 0x3C3C3C)).cornerRadius(6)
                 Button { Task { await sendAI() } } label: {
                     Image(systemName: aiBusy ? "stop.circle" : "arrow.up.circle.fill")
-                        .foregroundStyle(cStatus).font(.title3)
-                }.disabled(aiBusy || aiInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .foregroundStyle(canSendAI ? cStatus : cMuted).font(.title3)
+                }.disabled(!canSendAI)
             }
             .padding(10).background(cSidebar)
         }
         .background(cSidebar)
+        .onChange(of: aiPhotoItems) { _, items in Task { await loadAIPhotos(items) } }
+        .fileImporter(isPresented: $showAIFileImporter,
+                      allowedContentTypes: [.item], allowsMultipleSelection: true) { handleAIFiles($0) }
+        .sheet(isPresented: $showAIModelPicker) { aiModelPicker }
+    }
+
+    private func aiBubble(_ m: Message) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(m.role == .user ? "Ты" : "ИИ")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(m.role == .user ? cStatus : Color(hex: 0x4EC9B0))
+            ForEach(m.attachments) { a in
+                if a.kind == .image, let d = Data(base64Encoded: a.base64), let ui = UIImage(data: d) {
+                    Image(uiImage: ui).resizable().scaledToFit().frame(maxHeight: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Label(shortName(a.fileName), systemImage: "paperclip").font(.system(size: 10)).foregroundStyle(cMuted)
+                }
+            }
+            if !m.content.isEmpty || m.attachments.isEmpty {
+                Text(m.content.isEmpty ? "…" : m.content)
+                    .font(.caption).foregroundStyle(cText).textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(m.role == .user ? Color.white.opacity(0.05) : cSidebar)
+        .cornerRadius(8)
+    }
+
+    private var aiModelPicker: some View {
+        NavigationStack {
+            List {
+                ForEach(settings.providers) { p in
+                    Section(p.isGift ? "🎁 \(p.name)" : p.name) {
+                        ForEach(p.models, id: \.self) { m in
+                            let shown = p.isGift ? p.displayName(for: m) : m
+                            let sel = ModelSelection(providerID: p.id, model: m,
+                                                     displayName: p.isGift ? shown : "\(p.name) · \(m)")
+                            Button {
+                                aiSelection = sel; showAIModelPicker = false
+                            } label: {
+                                HStack {
+                                    Image(systemName: "cpu").foregroundStyle(settings.accentColor)
+                                    Text(shown).foregroundStyle(.primary)
+                                    Spacer()
+                                    if aiSelection?.id == sel.id || (aiSelection == nil && p.isDefault && m == p.models.first) {
+                                        Image(systemName: "checkmark").foregroundStyle(settings.accentColor)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Выбор модели")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { showAIModelPicker = false } } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var canSendAI: Bool {
+        !aiBusy && (!aiInput.trimmingCharacters(in: .whitespaces).isEmpty || !aiAttachments.isEmpty)
+    }
+    private var currentAIModelLabel: String {
+        if let sel = aiSelection {
+            if let p = settings.provider(for: sel.providerID), p.isGift { return p.displayName(for: sel.model) }
+            return sel.model
+        }
+        return settings.defaultProvider.map { p in
+            p.isGift ? p.displayName(for: p.primaryModel) : p.primaryModel
+        } ?? "Модель"
     }
 
     // MARK: - Status bar
@@ -590,12 +704,22 @@ struct VSCodeView: View {
 
     @MainActor private func sendAI() async {
         let text = aiInput.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, let provider = settings.defaultProvider else {
+        guard !text.isEmpty || !aiAttachments.isEmpty else { return }
+        // resolve provider + model from selection (fallback to default)
+        let provider: AIProvider
+        let model: String
+        if let sel = aiSelection, let p = settings.provider(for: sel.providerID) {
+            provider = p; model = sel.model
+        } else if let p = settings.defaultProvider {
+            provider = p; model = p.primaryModel
+        } else {
             aiMessages.append(Message(role: .assistant, content: "Добавь нейросеть в настройках."))
             return
         }
-        aiInput = ""
-        aiMessages.append(Message(role: .user, content: text))
+
+        let atts = aiAttachments
+        aiInput = ""; aiAttachments = []
+        aiMessages.append(Message(role: .user, content: text, attachments: atts))
         aiMessages.append(Message(role: .assistant, content: ""))
         aiBusy = true; defer { aiBusy = false }
 
@@ -603,7 +727,6 @@ struct VSCodeView: View {
             content: "Ты помощник-программист в IDE OpenVolt. Отвечай кратко. Текущий файл: \(openFile?.name ?? "нет").\n\(openFile.map { "Содержимое:\n\($0.content.prefix(2000))" } ?? "")")]
         history += aiMessages.filter { !($0.role == .assistant && $0.content.isEmpty) }
 
-        let model = settings.availableSelections().first { $0.providerID == provider.id }?.model ?? provider.primaryModel
         let client = AIClient(provider: provider, model: model)
         var acc = ""
         do {
@@ -617,6 +740,28 @@ struct VSCodeView: View {
         } catch {
             if let i = aiMessages.lastIndex(where: { $0.role == .assistant }) {
                 aiMessages[i].content = "⚠️ \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func loadAIPhotos(_ items: [PhotosPickerItem]) async {
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                aiAttachments.append(Attachment(kind: .image, fileName: "image_\(aiAttachments.count + 1).jpg",
+                                                mimeType: "image/jpeg", base64: data.base64EncodedString()))
+            }
+        }
+        aiPhotoItems = []
+    }
+    private func handleAIFiles(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        for url in urls {
+            guard url.startAccessingSecurityScopedResource() else { continue }
+            defer { url.stopAccessingSecurityScopedResource() }
+            if let data = try? Data(contentsOf: url) {
+                aiAttachments.append(Attachment(kind: .file, fileName: url.lastPathComponent,
+                                                mimeType: "application/octet-stream",
+                                                base64: data.base64EncodedString()))
             }
         }
     }
