@@ -44,6 +44,18 @@ struct ProjectDetailView: View {
                             }
                         }
                     }
+                    Section("Инструменты") {
+                        NavigationLink {
+                            BoardView(projectID: projectID)
+                        } label: {
+                            Label("Доска задач", systemImage: "rectangle.split.3x1.fill")
+                        }
+                        NavigationLink {
+                            TerminalView(projectID: projectID)
+                        } label: {
+                            Label("Терминал", systemImage: "terminal.fill")
+                        }
+                    }
                     Section {
                         Button { showInstructions = true } label: {
                             HStack {

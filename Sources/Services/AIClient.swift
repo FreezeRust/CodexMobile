@@ -299,6 +299,14 @@ enum ResponseParser {
     static func extractDeletions(from text: String) -> [String] {
         extractLines(from: text, fence: "rm")
     }
+    /// Extract terminal commands from ```run blocks (one per line).
+    static func extractTerminalCommands(from text: String) -> [String] {
+        extractLines(from: text, fence: "run")
+    }
+    /// Extract board operations from ```board blocks (one op per line).
+    static func extractBoardOps(from text: String) -> [String] {
+        extractLines(from: text, fence: "board")
+    }
 
     private static func extractLines(from text: String, fence: String) -> [String] {
         let pattern = "```\(fence)\\s*\\n([\\s\\S]*?)```"
@@ -318,7 +326,7 @@ enum ResponseParser {
     /// Remove our special control blocks from displayed text.
     static func stripControlBlocks(_ text: String) -> String {
         var t = text
-        for fence in ["poll", "image", "tasks", "mkdir", "rm"] {
+        for fence in ["poll", "image", "tasks", "mkdir", "rm", "run", "board"] {
             let pat = "```\(fence)\\s*\\n[\\s\\S]*?```"
             if let r = try? NSRegularExpression(pattern: pat, options: .caseInsensitive) {
                 let ns = t as NSString
@@ -340,7 +348,7 @@ enum CodeExtractor {
         for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
             let lang = ns.substring(with: m.range(at: 1))
             // Skip our control blocks — they must NOT become files.
-            if ["poll", "image", "tasks", "mkdir", "rm"].contains(lang.lowercased()) { continue }
+            if ["poll", "image", "tasks", "mkdir", "rm", "run", "board"].contains(lang.lowercased()) { continue }
             var body = ns.substring(with: m.range(at: 2))
             var lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             let firstLine = lines.first ?? ""

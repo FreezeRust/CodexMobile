@@ -106,6 +106,46 @@ struct Project: Identifiable, Codable, Hashable {
     var files: [GeneratedFile] = []
     var skills: [Skill] = []                 // reusable abilities/instructions for the AI
     var instructions: String = ""            // project-wide instructions
+    var board: Board = Board.makeDefault()   // task board (как в Obsidian)
+    var terminalHistory: [TerminalEntry] = []
+}
+
+// MARK: - Board (доска задач)
+
+struct Board: Codable, Hashable {
+    var columns: [BoardColumn] = []
+    static func makeDefault() -> Board {
+        Board(columns: [
+            BoardColumn(title: "К выполнению"),
+            BoardColumn(title: "В работе"),
+            BoardColumn(title: "Готово")
+        ])
+    }
+}
+
+struct BoardColumn: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var title: String
+    var cards: [BoardCard] = []
+}
+
+struct BoardCard: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var title: String
+    var detail: String = ""
+    var done: Bool = false
+    var createdAt: Date = Date()
+}
+
+// MARK: - Terminal entry (виртуальный терминал)
+
+struct TerminalEntry: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var command: String
+    var output: String
+    var isError: Bool = false
+    var fromAI: Bool = false
+    var createdAt: Date = Date()
 }
 
 // MARK: - Skill (навык/инструкция, которыми ИИ может пользоваться)

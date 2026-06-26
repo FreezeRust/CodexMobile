@@ -353,6 +353,19 @@ struct ChatView: View {
                 let names = project.files.prefix(20).map { $0.name }.joined(separator: ", ")
                 parts.append("Файлы проекта: \(names)")
             }
+            // Board state for the AI to read & act on
+            if !project.board.columns.isEmpty {
+                var b = "Доска задач:\n"
+                for col in project.board.columns {
+                    b += "[\(col.title)]\n"
+                    for card in col.cards {
+                        b += "  - \(card.done ? "✓" : "○") \(card.title)"
+                        if !card.detail.isEmpty { b += " — \(card.detail)" }
+                        b += "\n"
+                    }
+                }
+                parts.append(b)
+            }
         }
         return Message(role: .system, content: parts.joined(separator: "\n\n"))
     }
@@ -457,6 +470,25 @@ struct ChatView: View {
             deletePath(path)
         }
 
+        // Terminal commands requested by the AI
+        let runCommands = ResponseParser.extractTerminalCommands(from: acc)
+        if !runCommands.isEmpty {
+            var results = ""
+            for c in runCommands {
+                let out = store.runTerminal(c, projectID: projectID, fromAI: true)
+                results += "$ \(c)\n\(out)\n"
+            }
+            // Feed results back so the AI can react in the chat too
+            store.appendMessage(Message(role: .assistant,
+                content: "🖥️ Терминал:\n```\n\(results.trimmingCharacters(in: .whitespacesAndNewlines))\n```"),
+                projectID: projectID, chatID: chatID)
+        }
+
+        // Board operations
+        for op in ResponseParser.extractBoardOps(from: acc) {
+            applyBoardOp(op)
+        }
+
         // Save generated files (with history-aware updates)
         let files = CodeExtractor.extract(from: acc)
         for f in files { upsertFile(f) }
@@ -465,6 +497,39 @@ struct ChatView: View {
         // If the AI planned tasks, execute them one by one.
         if let tasks, !tasks.isEmpty {
             await executeTasks(tasks, messageID: aid)
+        }
+    }
+
+    /// Parse one board operation line from the AI.
+    /// Formats: add "Col" | "Title" | "detail"  ; done "Title" ; move "Title" -> "Col" ; del "Title"
+    @MainActor private func applyBoardOp(_ raw: String) {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        func quoted(_ s: String) -> [String] {
+            var out: [String] = []; var cur = ""; var inside = false
+            for ch in s { if ch == "\"" { if inside { out.append(cur); cur = "" }; inside.toggle() } else if inside { cur.append(ch) } }
+            return out
+        }
+        let args = quoted(line)
+        let lower = line.lowercased()
+        if lower.hasPrefix("add") {
+            guard args.count >= 2, let col = store.columnID(named: args[0], projectID: projectID) else { return }
+            store.addCard(projectID: projectID, columnID: col, title: args[1],
+                          detail: args.count >= 3 ? args[2] : "")
+        } else if lower.hasPrefix("done") {
+            guard let title = args.first, let found = store.findCard(titled: title, projectID: projectID) else { return }
+            var c = found.card; c.done = true
+            store.updateCard(c, columnID: found.columnID, projectID: projectID)
+            if let doneCol = store.columnID(named: "готово", projectID: projectID) {
+                store.moveCard(c.id, toColumn: doneCol, projectID: projectID)
+            }
+        } else if lower.hasPrefix("move") {
+            guard args.count >= 2,
+                  let found = store.findCard(titled: args[0], projectID: projectID),
+                  let target = store.columnID(named: args[1], projectID: projectID) else { return }
+            store.moveCard(found.card.id, toColumn: target, projectID: projectID)
+        } else if lower.hasPrefix("del") {
+            guard let title = args.first, let found = store.findCard(titled: title, projectID: projectID) else { return }
+            store.deleteCard(found.card.id, columnID: found.columnID, projectID: projectID)
         }
     }
 
