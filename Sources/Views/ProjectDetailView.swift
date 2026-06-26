@@ -18,6 +18,7 @@ struct ProjectDetailView: View {
     @State private var showSkills = false
     @State private var showInstructions = false
     @State private var showScaffolds = false
+    @State private var showVSCode = false
 
     private var project: Project? { store.projects.first(where: { $0.id == projectID }) }
 
@@ -58,6 +59,9 @@ struct ProjectDetailView: View {
                         }
                         Button { showScaffolds = true } label: {
                             Label("Создать каркас проекта", systemImage: "square.grid.2x2.fill")
+                        }
+                        Button { showVSCode = true } label: {
+                            Label("Режим VS Code", systemImage: "chevron.left.forwardslash.chevron.right")
                         }
                     }
                     Section {
@@ -147,6 +151,9 @@ struct ProjectDetailView: View {
         .sheet(isPresented: $showSkills) { SkillsView(projectID: projectID) }
         .sheet(isPresented: $showInstructions) { InstructionsEditor(projectID: projectID) }
         .sheet(isPresented: $showScaffolds) { ScaffoldPicker(projectID: projectID) }
+        .fullScreenCover(isPresented: $showVSCode) {
+            VSCodeView(projectID: projectID) { showVSCode = false }
+        }
         .fileImporter(isPresented: $showFolderImporter,
                       allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
             importFolder(result)
@@ -182,6 +189,9 @@ struct ProjectDetailView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button { showVSCode = true } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
+        }
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
                 Button { showingNewChat = true } label: { Label("Новый чат", systemImage: "plus.bubble") }
