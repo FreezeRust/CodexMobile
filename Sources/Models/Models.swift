@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 // MARK: - Provider kind (тип API)
 
@@ -137,6 +138,7 @@ struct GeneratedFile: Identifiable, Codable, Hashable {
     var content: String
     var createdAt: Date = Date()
     var history: [FileVersion] = []          // change history (newest first)
+    var isDirectory: Bool = false            // true = folder node
 }
 
 // MARK: - File version (история изменений)
@@ -155,6 +157,46 @@ struct Poll: Codable, Hashable {
     var options: [String]
     var selected: String? = nil
     var confirmed: Bool = false              // user must confirm the choice
+}
+
+// MARK: - Code font (как в популярных IDE)
+
+enum CodeFont: String, Codable, CaseIterable, Identifiable {
+    case system        // SF Mono (системный моноширинный)
+    case menlo         // Menlo (Xcode classic)
+    case courier       // Courier — ретро
+    case rounded       // SF Rounded — мягкий
+    case serif         // New York — с засечками
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system:  return "SF Mono"
+        case .menlo:   return "Menlo"
+        case .courier: return "Courier"
+        case .rounded: return "Rounded"
+        case .serif:   return "Serif"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .system:  return "Чистый моноширинный, как в современных IDE"
+        case .menlo:   return "Классика Xcode и терминала"
+        case .courier: return "Ретро печатная машинка"
+        case .rounded: return "Мягкий скруглённый"
+        case .serif:   return "С засечками, книжный"
+        }
+    }
+    /// Returns a Font for a given size.
+    func font(size: CGFloat) -> Font {
+        switch self {
+        case .system:  return .system(size: size, design: .monospaced)
+        case .menlo:   return .custom("Menlo", size: size)
+        case .courier: return .custom("Courier", size: size)
+        case .rounded: return .system(size: size, design: .rounded)
+        case .serif:   return .system(size: size, design: .serif)
+        }
+    }
 }
 
 // MARK: - Themes

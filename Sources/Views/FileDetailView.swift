@@ -30,7 +30,7 @@ struct FileDetailView: View {
             Group {
                 if isEditing {
                     TextEditor(text: $draft)
-                        .font(.system(.footnote, design: .monospaced))
+                        .font(settings.codeFont.font(size: 13))
                         .padding(8)
                         .scrollContentBackground(.hidden)
                         .background(settings.cardColor ?? Color(.secondarySystemBackground))
@@ -105,24 +105,26 @@ struct FileDetailView: View {
 // MARK: - Code with line numbers
 
 struct CodeWithLineNumbers: View {
+    @EnvironmentObject var settings: SettingsStore
     let content: String
     private var lines: [String] {
         content.isEmpty ? [""] : content.components(separatedBy: "\n")
     }
+    private var codeFont: Font { settings.codeFont.font(size: 12) }
     var body: some View {
         ScrollView([.vertical, .horizontal]) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .trailing, spacing: 0) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { i, _ in
                         Text("\(i + 1)")
-                            .font(.system(.caption, design: .monospaced))
+                            .font(codeFont)
                             .foregroundStyle(.secondary.opacity(0.5))
                     }
                 }
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                         Text(line.isEmpty ? " " : line)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(codeFont)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }

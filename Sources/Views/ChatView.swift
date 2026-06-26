@@ -438,6 +438,15 @@ struct ChatView: View {
             }
         }
 
+        // Folders to create
+        for path in ResponseParser.extractFolders(from: acc) {
+            store.addFolder(projectID: projectID, path: path)
+        }
+        // Deletions (files or folders)
+        for path in ResponseParser.extractDeletions(from: acc) {
+            deletePath(path)
+        }
+
         // Save generated files (with history-aware updates)
         let files = CodeExtractor.extract(from: acc)
         for f in files { upsertFile(f) }
@@ -446,6 +455,20 @@ struct ChatView: View {
         // If the AI planned tasks, execute them one by one.
         if let tasks, !tasks.isEmpty {
             await executeTasks(tasks, messageID: aid)
+        }
+    }
+
+    /// Delete a file by name or a folder (with everything inside).
+    @MainActor private func deletePath(_ path: String) {
+        var clean = path
+        if clean.hasSuffix("/") { clean.removeLast() }
+        let files = store.project(projectID)?.files ?? []
+        if let folder = files.first(where: { $0.isDirectory && $0.name == clean }) {
+            store.deleteFolder(projectID: projectID, path: folder.name)
+        } else if files.contains(where: { $0.name.hasPrefix(clean + "/") }) {
+            store.deleteFolder(projectID: projectID, path: clean)
+        } else if let f = files.first(where: { $0.name == clean }) {
+            store.deleteFile(f.id, projectID: projectID)
         }
     }
 

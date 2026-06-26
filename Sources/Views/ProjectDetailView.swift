@@ -10,6 +10,8 @@ struct ProjectDetailView: View {
     @State private var newChatTitle = ""
     @State private var showingNewFile = false
     @State private var newFileName = ""
+    @State private var showingNewFolder = false
+    @State private var newFolderName = ""
     @State private var showShare = false
     @State private var zipURL: URL?
     @State private var showFolderImporter = false
@@ -73,20 +75,39 @@ struct ProjectDetailView: View {
                                 .foregroundStyle(.secondary).font(.caption)
                         }
                         ForEach(project.files) { file in
-                            NavigationLink {
-                                FileDetailView(projectID: projectID, fileID: file.id)
-                            } label: {
-                                Label(file.name, systemImage: "doc.text.fill")
+                            if file.isDirectory {
+                                HStack {
+                                    Label(file.name, systemImage: "folder.fill")
+                                        .foregroundStyle(settings.accentColor)
+                                    Spacer()
+                                }
+                                .swipeActions {
+                                    Button("Удалить", role: .destructive) {
+                                        store.deleteFolder(projectID: projectID, path: file.name)
+                                    }
+                                }
+                            } else {
+                                NavigationLink {
+                                    FileDetailView(projectID: projectID, fileID: file.id)
+                                } label: {
+                                    Label(file.name, systemImage: "doc.text.fill")
+                                }
                             }
                         }
                         .onDelete { idx in
-                            idx.map { project.files[$0] }.forEach { store.deleteFile($0.id, projectID: projectID) }
+                            idx.map { project.files[$0] }.forEach {
+                                if $0.isDirectory { store.deleteFolder(projectID: projectID, path: $0.name) }
+                                else { store.deleteFile($0.id, projectID: projectID) }
+                            }
                         }
                         Button { newFileName = "new_file.txt"; showingNewFile = true } label: {
                             Label("Создать файл", systemImage: "doc.badge.plus")
                         }
+                        Button { newFolderName = "new_folder"; showingNewFolder = true } label: {
+                            Label("Создать папку", systemImage: "folder.badge.plus")
+                        }
                         Button { showFolderImporter = true } label: {
-                            Label("Импортировать папку", systemImage: "folder.badge.plus")
+                            Label("Импортировать папку", systemImage: "square.and.arrow.down.on.square")
                         }
                     } header: {
                         HStack {
@@ -124,13 +145,22 @@ struct ProjectDetailView: View {
             Button("Отмена", role: .cancel) { newChatTitle = "" }
         }
         .alert("Новый файл", isPresented: $showingNewFile) {
-            TextField("Имя файла", text: $newFileName)
+            TextField("Имя файла (можно путь: src/app.js)", text: $newFileName)
             Button("Создать") {
                 let n = newFileName.trimmingCharacters(in: .whitespaces)
                 if !n.isEmpty { store.addEmptyFile(projectID: projectID, name: n) }
                 newFileName = ""
             }
             Button("Отмена", role: .cancel) { newFileName = "" }
+        }
+        .alert("Новая папка", isPresented: $showingNewFolder) {
+            TextField("Имя папки (можно путь: src/utils)", text: $newFolderName)
+            Button("Создать") {
+                let n = newFolderName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty { store.addFolder(projectID: projectID, path: n) }
+                newFolderName = ""
+            }
+            Button("Отмена", role: .cancel) { newFolderName = "" }
         }
     }
 
@@ -141,7 +171,10 @@ struct ProjectDetailView: View {
                 Button { newFileName = "new_file.txt"; showingNewFile = true } label: {
                     Label("Новый файл", systemImage: "doc.badge.plus")
                 }
-                Button { showFolderImporter = true } label: { Label("Импорт папки", systemImage: "folder.badge.plus") }
+                Button { newFolderName = "new_folder"; showingNewFolder = true } label: {
+                    Label("Новая папка", systemImage: "folder.badge.plus")
+                }
+                Button { showFolderImporter = true } label: { Label("Импорт папки", systemImage: "square.and.arrow.down.on.square") }
                 if !(project?.files.isEmpty ?? true) {
                     Button { exportZip() } label: { Label("Экспорт проекта .zip", systemImage: "doc.zipper") }
                 }

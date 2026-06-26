@@ -52,6 +52,11 @@ struct SettingsView: View {
                 }
             }
             .padding(.vertical, 4)
+            Picker(selection: $settings.codeFont) {
+                ForEach(CodeFont.allCases) { Text($0.title).tag($0) }
+            } label: {
+                Label("Шрифт кода", systemImage: "textformat")
+            }
             Button { showThemeEditor = true } label: {
                 HStack {
                     Label("Создать свою тему", systemImage: "paintpalette.fill")

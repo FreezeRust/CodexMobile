@@ -19,11 +19,11 @@ struct CodeViewerSheet: View {
                     HStack(alignment: .top, spacing: 10) {
                         // line numbers
                         Text(lineNumbers)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(settings.codeFont.font(size: 12))
                             .foregroundStyle(.secondary.opacity(0.6))
                             .multilineTextAlignment(.trailing)
                         Text(content)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(settings.codeFont.font(size: 12))
                             .textSelection(.enabled)
                     }
                     .padding()

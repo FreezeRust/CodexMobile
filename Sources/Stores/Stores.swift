@@ -144,6 +144,30 @@ final class AppStore: ObservableObject {
         save()
     }
 
+    // MARK: - Folders
+
+    /// Create a folder node (path ends with "/" conceptually; stored as isDirectory).
+    func addFolder(projectID: UUID, path: String) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        var clean = path.trimmingCharacters(in: .whitespaces)
+        if clean.hasSuffix("/") { clean.removeLast() }
+        guard !clean.isEmpty else { return }
+        // avoid duplicates
+        if projects[p].files.contains(where: { $0.isDirectory && $0.name == clean }) { return }
+        projects[p].files.insert(GeneratedFile(name: clean, language: "folder", content: "", isDirectory: true), at: 0)
+        save()
+    }
+
+    /// Delete a folder and everything inside it (by path prefix).
+    func deleteFolder(projectID: UUID, path: String) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        var clean = path
+        if clean.hasSuffix("/") { clean.removeLast() }
+        let prefix = clean + "/"
+        projects[p].files.removeAll { $0.name == clean || $0.name.hasPrefix(prefix) }
+        save()
+    }
+
     func attachFiles(_ files: [GeneratedFile], projectID: UUID) {
         guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return }
         projects[p].files.insert(contentsOf: files, at: 0)
@@ -172,6 +196,12 @@ final class SettingsStore: ObservableObject {
     @Published var typingSpeed: TypingSpeed {
         didSet { UserDefaults.standard.set(typingSpeed.rawValue, forKey: "typing_speed") }
     }
+    @Published var codeFont: CodeFont {
+        didSet { UserDefaults.standard.set(codeFont.rawValue, forKey: "code_font") }
+    }
+    @Published var hasOnboarded: Bool {
+        didSet { UserDefaults.standard.set(hasOnboarded, forKey: "has_onboarded") }
+    }
     // Custom theme colors (hex strings)
     @Published var customAccentHex: String {
         didSet { UserDefaults.standard.set(customAccentHex, forKey: "custom_accent") }
@@ -194,8 +224,9 @@ final class SettingsStore: ObservableObject {
         systemPrompt = UserDefaults.standard.string(forKey: "system_prompt")
             ?? """
             Ты — помощник-программист в приложении OpenVolt. Используй markdown: заголовки #, списки -, **жирный**.
-            Когда создаёшь файл, ВСЕГДА оборачивай его в блок с указанием языка и первой строкой ставь комментарий с именем файла, например // file: calculator.html — тогда пользователь увидит карточку «Создание calculator.html».
-            Опрос: если нужно уточнить выбор у пользователя, выведи блок ```poll с JSON {"question":"...","options":["A","B"]}. ВАЖНО: после опроса ОСТАНОВИСЬ и жди ответ пользователя — не продолжай, пока он не подтвердит выбор. Когда пользователь пришлёт «Выбран вариант: X», продолжай с учётом этого.
+            Файлы: когда создаёшь файл, ВСЕГДА оборачивай его в блок с указанием языка и первой строкой ставь комментарий с именем файла, например // file: src/calculator.html — путь со слэшами создаёт вложенные папки. Пользователь увидит карточку «Создание calculator.html».
+            Папки: чтобы создать пустую папку, выведи блок ```mkdir и в нём путь, например src/utils. Чтобы удалить файлы или папки, выведи блок ```rm и в нём по одному пути на строке (папка удаляется со всем содержимым).
+            Опрос: если нужно уточнить выбор у пользователя, выведи блок ```poll с JSON {"question":"...","options":["A","B"]}. ВАЖНО: после опроса ОСТАНОВИСЬ и жди ответ пользователя. Когда пользователь пришлёт «Выбран вариант: X», продолжай с учётом этого.
             Задачи: для сложного запроса сначала составь план в блоке ```tasks с JSON-массивом строк, например ["Создать HTML","Добавить CSS","Написать JS"]. Затем выполняй задачи по очереди.
             """
         customAccentHex = UserDefaults.standard.string(forKey: "custom_accent") ?? "#6B55F4"
@@ -204,6 +235,8 @@ final class SettingsStore: ObservableObject {
         customIsDark = UserDefaults.standard.object(forKey: "custom_dark") as? Bool ?? true
         typingAnimation = TypingAnimation(rawValue: UserDefaults.standard.string(forKey: "typing_anim") ?? "") ?? .character
         typingSpeed = TypingSpeed(rawValue: UserDefaults.standard.string(forKey: "typing_speed") ?? "") ?? .normal
+        codeFont = CodeFont(rawValue: UserDefaults.standard.string(forKey: "code_font") ?? "") ?? .system
+        hasOnboarded = UserDefaults.standard.bool(forKey: "has_onboarded")
         loadProviders()
     }
 

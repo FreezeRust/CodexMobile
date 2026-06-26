@@ -280,7 +280,7 @@ struct CodeCard: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(content)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(settings.codeFont.font(size: 12))
                     .foregroundStyle(.primary)
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)

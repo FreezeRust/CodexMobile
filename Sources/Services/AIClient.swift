@@ -291,10 +291,35 @@ enum ResponseParser {
         return nil
     }
 
+    /// Extract folder-creation paths from ```mkdir blocks.
+    static func extractFolders(from text: String) -> [String] {
+        extractLines(from: text, fence: "mkdir")
+    }
+    /// Extract deletion paths from ```rm blocks.
+    static func extractDeletions(from text: String) -> [String] {
+        extractLines(from: text, fence: "rm")
+    }
+
+    private static func extractLines(from text: String, fence: String) -> [String] {
+        let pattern = "```\(fence)\\s*\\n([\\s\\S]*?)```"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
+        let ns = text as NSString
+        var out: [String] = []
+        for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            let body = ns.substring(with: m.range(at: 1))
+            for line in body.components(separatedBy: "\n") {
+                let p = line.trimmingCharacters(in: CharacterSet(charactersIn: " \t-•\"'`"))
+                if !p.isEmpty { out.append(p) }
+            }
+        }
+        return out
+    }
+
     /// Remove our special control blocks from displayed text.
     static func stripControlBlocks(_ text: String) -> String {
         var t = text
-        for pat in ["```poll\\s*\\n[\\s\\S]*?```", "```image\\s*\\n[\\s\\S]*?```", "```tasks\\s*\\n[\\s\\S]*?```"] {
+        for fence in ["poll", "image", "tasks", "mkdir", "rm"] {
+            let pat = "```\(fence)\\s*\\n[\\s\\S]*?```"
             if let r = try? NSRegularExpression(pattern: pat, options: .caseInsensitive) {
                 let ns = t as NSString
                 t = r.stringByReplacingMatches(in: t, range: NSRange(location: 0, length: ns.length), withTemplate: "")
@@ -315,7 +340,7 @@ enum CodeExtractor {
         for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
             let lang = ns.substring(with: m.range(at: 1))
             // Skip our control blocks — they must NOT become files.
-            if ["poll", "image", "tasks"].contains(lang.lowercased()) { continue }
+            if ["poll", "image", "tasks", "mkdir", "rm"].contains(lang.lowercased()) { continue }
             var body = ns.substring(with: m.range(at: 2))
             var lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             let firstLine = lines.first ?? ""
