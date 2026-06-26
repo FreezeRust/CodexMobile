@@ -17,6 +17,7 @@ struct ProjectDetailView: View {
     @State private var showFolderImporter = false
     @State private var showSkills = false
     @State private var showInstructions = false
+    @State private var showScaffolds = false
 
     private var project: Project? { store.projects.first(where: { $0.id == projectID }) }
 
@@ -54,6 +55,9 @@ struct ProjectDetailView: View {
                             TerminalView(projectID: projectID)
                         } label: {
                             Label("Терминал", systemImage: "terminal.fill")
+                        }
+                        Button { showScaffolds = true } label: {
+                            Label("Создать каркас проекта", systemImage: "square.grid.2x2.fill")
                         }
                     }
                     Section {
@@ -142,6 +146,7 @@ struct ProjectDetailView: View {
         .sheet(isPresented: $showShare) { if let zipURL { ShareSheet(items: [zipURL]) } }
         .sheet(isPresented: $showSkills) { SkillsView(projectID: projectID) }
         .sheet(isPresented: $showInstructions) { InstructionsEditor(projectID: projectID) }
+        .sheet(isPresented: $showScaffolds) { ScaffoldPicker(projectID: projectID) }
         .fileImporter(isPresented: $showFolderImporter,
                       allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
             importFolder(result)
@@ -364,5 +369,55 @@ struct SkillEditor: View {
             store.addSkill(Skill(name: name, detail: detail), projectID: projectID)
         }
         dismiss()
+    }
+}
+
+// MARK: - Scaffold picker
+
+struct ScaffoldPicker: View {
+    @EnvironmentObject var store: AppStore
+    @EnvironmentObject var settings: SettingsStore
+    @Environment(\.dismiss) var dismiss
+    let projectID: UUID
+    @State private var created: String?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                if let bg = settings.bgColor { bg.ignoresSafeArea() }
+                List {
+                    Section {
+                        ForEach(Scaffolder.all) { s in
+                            Button {
+                                let n = store.applyScaffold(s, projectID: projectID)
+                                created = "\(s.title): \(s.folders.count) папок, \(n) файлов"
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: s.icon)
+                                        .foregroundStyle(.white)
+                                        .frame(width: 40, height: 40)
+                                        .background(settings.accentGradient, in: RoundedRectangle(cornerRadius: 10))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(s.title).font(.headline).foregroundStyle(.primary)
+                                        Text(s.subtitle).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "plus.circle.fill").foregroundStyle(settings.accentColor)
+                                }
+                            }
+                        }
+                    } footer: {
+                        Text("Создаётся структура папок и базовый код. Можно сразу редактировать и запускать (node для JS).")
+                    }
+                }
+                .scrollContentBackground(settings.bgColor == nil ? .visible : .hidden)
+            }
+            .navigationTitle("Каркасы проектов")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрыть") { dismiss() } } }
+            .alert("Готово!", isPresented: Binding(get: { created != nil }, set: { if !$0 { created = nil } })) {
+                Button("Отлично") { dismiss() }
+            } message: { Text(created ?? "") }
+        }
     }
 }

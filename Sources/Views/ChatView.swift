@@ -19,6 +19,7 @@ struct ChatView: View {
     @State private var codeViewer: CodeViewerData?
     @State private var selectionText: String?
     @State private var streamingMessageID: UUID?
+    @State private var pendingScaffold: Scaffold?
 
     private var chat: Chat? {
         store.projects.first(where: { $0.id == projectID })?.chats.first(where: { $0.id == chatID })
@@ -36,6 +37,7 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal).padding(.vertical, 4)
                 }
+                scaffoldBanner
                 quoteBar
                 attachmentStrip
                 inputBar
@@ -114,6 +116,37 @@ struct ChatView: View {
     }
 
     // MARK: - Quote bar
+
+    @ViewBuilder private var scaffoldBanner: some View {
+        if let s = pendingScaffold {
+            HStack(spacing: 10) {
+                Image(systemName: s.icon)
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(settings.accentGradient, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Создать каркас: \(s.title)?").font(.subheadline.bold())
+                    Text("\(s.folders.count) папок · \(s.files.count) файлов").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Создать") {
+                    let n = store.applyScaffold(s, projectID: projectID)
+                    store.appendMessage(Message(role: .assistant,
+                        content: "📦 Создан каркас **\(s.title)**: \(s.folders.count) папок, \(n) файлов. Загляни во вкладку файлов проекта."),
+                        projectID: projectID, chatID: chatID)
+                    pendingScaffold = nil
+                }
+                .font(.caption.bold()).foregroundStyle(.white)
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(settings.accentGradient, in: Capsule())
+                Button { pendingScaffold = nil } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .background(.ultraThinMaterial)
+        }
+    }
 
     @ViewBuilder private var quoteBar: some View {
         if let q = quoting {
@@ -407,6 +440,12 @@ struct ChatView: View {
 
         store.appendMessage(Message(role: .user, content: text, attachments: atts, quoted: quote),
                             projectID: projectID, chatID: chatID)
+
+        // Auto-detect a project scaffold request and offer to create it.
+        if let scaffold = Scaffolder.detect(in: text) {
+            pendingScaffold = scaffold
+        }
+
         await runAssistantTurn(selection: sel)
     }
 

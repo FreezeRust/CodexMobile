@@ -174,6 +174,41 @@ final class AppStore: ObservableObject {
         save()
     }
 
+    /// Creates a full folder/file structure from a scaffold template.
+    @discardableResult
+    func applyScaffold(_ scaffold: Scaffold, projectID: UUID) -> Int {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return 0 }
+        for folder in scaffold.folders {
+            if !projects[p].files.contains(where: { $0.isDirectory && $0.name == folder }) {
+                projects[p].files.insert(GeneratedFile(name: folder, language: "folder",
+                                                       content: "", isDirectory: true), at: 0)
+            }
+        }
+        var added = 0
+        for f in scaffold.files {
+            // strip a leading "// file: ..." marker line if present
+            var content = f.content
+            if let firstNL = content.firstIndex(of: "\n") {
+                let firstLine = String(content[content.startIndex..<firstNL])
+                if firstLine.contains("file:") { content = String(content[content.index(after: firstNL)...]) }
+            }
+            if let i = projects[p].files.firstIndex(where: { $0.name == f.path && !$0.isDirectory }) {
+                projects[p].files[i].content = content
+            } else {
+                projects[p].files.insert(GeneratedFile(name: f.path, language: lang(for: f.path),
+                                                       content: content), at: 0)
+            }
+            added += 1
+        }
+        save()
+        return added
+    }
+
+    private func lang(for path: String) -> String {
+        let e = (path as NSString).pathExtension.lowercased()
+        return e.isEmpty ? "text" : e
+    }
+
     func project(_ id: UUID) -> Project? { projects.first(where: { $0.id == id }) }
 
     // MARK: - Board
