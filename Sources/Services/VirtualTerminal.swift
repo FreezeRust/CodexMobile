@@ -28,10 +28,41 @@ struct VirtualTerminal {
         case "rm":     return rmCommand(rest)
         case "mv":     return mvCommand(rest)
         case "echo":   return echoCommand(rest)
+        case "node":   return nodeCommand(rest)
+        case "js":     return nodeCommand(rest)
         case "clear":  return ("\u{0001}CLEAR", false)   // sentinel handled by UI
         default:
             return ("\(cmd): команда не найдена. Введите 'help' для списка.", true)
         }
+    }
+
+    // MARK: - node / js (real JavaScript via JavaScriptCore)
+
+    private func nodeCommand(_ arg: String) -> (String, Bool) {
+        let a = arg.trimmingCharacters(in: .whitespaces)
+        guard !a.isEmpty else { return ("node: укажите файл (node app.js) или код (node -e \"...\")", true) }
+
+        var source: String
+        if a.hasPrefix("-e ") || a.hasPrefix("--eval ") {
+            // node -e "code"
+            var code = a.replacingOccurrences(of: "-e ", with: "")
+                        .replacingOccurrences(of: "--eval ", with: "")
+                        .trimmingCharacters(in: .whitespaces)
+            if (code.hasPrefix("\"") && code.hasSuffix("\"")) || (code.hasPrefix("'") && code.hasSuffix("'")), code.count >= 2 {
+                code = String(code.dropFirst().dropLast())
+            }
+            source = code
+        } else {
+            // node <file.js>
+            guard let f = files.first(where: { $0.name == a && !$0.isDirectory }) else {
+                return ("node: \(a): нет такого файла", true)
+            }
+            source = f.content
+        }
+
+        let rt = JSRuntime()
+        let result = rt.run(source)
+        return result
     }
 
     // MARK: - Commands
@@ -52,8 +83,13 @@ struct VirtualTerminal {
           touch <файл>     создать пустой файл
           mv <из> <в>      переименовать/переместить
           rm <путь>        удалить файл или папку
+          node <файл.js>   выполнить JavaScript-файл (реально)
+          node -e "код"    выполнить JS-код
           pwd              текущий проект
           clear            очистить терминал
+
+        Примечание: настоящие python/git/system недоступны на iOS
+        (запрет песочницы). JavaScript выполняется по-настоящему.
         """
     }
 
