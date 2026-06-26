@@ -133,6 +133,26 @@ final class AppStore: ObservableObject {
         projects[p].files[f].name = name
         save()
     }
+    /// Rename a folder and re-path all files/folders inside it.
+    func renameFolder(_ id: UUID, projectID: UUID, newName: String) {
+        guard let p = projects.firstIndex(where: { $0.id == projectID }),
+              let f = projects[p].files.firstIndex(where: { $0.id == id }),
+              projects[p].files[f].isDirectory else { return }
+        let oldPath = projects[p].files[f].name
+        var clean = newName.trimmingCharacters(in: .whitespaces)
+        if clean.hasSuffix("/") { clean.removeLast() }
+        guard !clean.isEmpty, clean != oldPath else { return }
+        let oldPrefix = oldPath + "/"
+        for i in projects[p].files.indices {
+            let nm = projects[p].files[i].name
+            if projects[p].files[i].id == id {
+                projects[p].files[i].name = clean
+            } else if nm.hasPrefix(oldPrefix) {
+                projects[p].files[i].name = clean + "/" + String(nm.dropFirst(oldPrefix.count))
+            }
+        }
+        save()
+    }
     func deleteFile(_ id: UUID, projectID: UUID) {
         guard let p = projects.firstIndex(where: { $0.id == projectID }) else { return }
         projects[p].files.removeAll { $0.id == id }
@@ -321,6 +341,22 @@ final class SettingsStore: ObservableObject {
     @Published var hasOnboarded: Bool {
         didSet { UserDefaults.standard.set(hasOnboarded, forKey: "has_onboarded") }
     }
+    // VS Code mode layout
+    @Published var ideSidebarWidth: Double {
+        didSet { UserDefaults.standard.set(ideSidebarWidth, forKey: "ide_sidebar_w") }
+    }
+    @Published var idePanelHeight: Double {
+        didSet { UserDefaults.standard.set(idePanelHeight, forKey: "ide_panel_h") }
+    }
+    @Published var ideAIWidth: Double {
+        didSet { UserDefaults.standard.set(ideAIWidth, forKey: "ide_ai_w") }
+    }
+    @Published var ideFontSize: Double {
+        didSet { UserDefaults.standard.set(ideFontSize, forKey: "ide_font_size") }
+    }
+    @Published var ideActivityBarWidth: Double {
+        didSet { UserDefaults.standard.set(ideActivityBarWidth, forKey: "ide_activity_w") }
+    }
     // Custom theme colors (hex strings)
     @Published var customAccentHex: String {
         didSet { UserDefaults.standard.set(customAccentHex, forKey: "custom_accent") }
@@ -358,6 +394,11 @@ final class SettingsStore: ObservableObject {
         typingSpeed = TypingSpeed(rawValue: UserDefaults.standard.string(forKey: "typing_speed") ?? "") ?? .normal
         codeFont = CodeFont(rawValue: UserDefaults.standard.string(forKey: "code_font") ?? "") ?? .system
         hasOnboarded = UserDefaults.standard.bool(forKey: "has_onboarded")
+        ideSidebarWidth = (UserDefaults.standard.object(forKey: "ide_sidebar_w") as? Double) ?? 230
+        idePanelHeight = (UserDefaults.standard.object(forKey: "ide_panel_h") as? Double) ?? 220
+        ideAIWidth = (UserDefaults.standard.object(forKey: "ide_ai_w") as? Double) ?? 300
+        ideFontSize = (UserDefaults.standard.object(forKey: "ide_font_size") as? Double) ?? 13
+        ideActivityBarWidth = (UserDefaults.standard.object(forKey: "ide_activity_w") as? Double) ?? 48
         loadProviders()
     }
 
