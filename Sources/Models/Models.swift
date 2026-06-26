@@ -51,13 +51,39 @@ struct AIProvider: Identifiable, Codable, Hashable {
     var isDefault: Bool = false
     var supportsImages: Bool = false        // can generate images
     var imageModel: String = ""             // e.g. "dall-e-3" / "gpt-image-1"
+    var isGift: Bool = false                // built-in free provider, locked
+    var modelDisplayNames: [String: String] = [:]   // real model id -> shown name
 
     var primaryModel: String { models.first ?? kind.defaultModel }
+
+    func displayName(for model: String) -> String {
+        modelDisplayNames[model] ?? model
+    }
 
     static func makeOpenAI() -> AIProvider {
         AIProvider(name: "OpenAI", kind: .openAI, baseURL: ProviderKind.openAI.defaultBaseURL,
                    models: ["gpt-4o-mini", "gpt-4o"], apiKeyRef: UUID().uuidString,
                    isDefault: true, supportsImages: true, imageModel: "dall-e-3")
+    }
+
+    /// Built-in free provider, gifted with the app. Locked from viewing/editing.
+    static let giftKeyRef = "gift_zyloo_key"
+    static let giftKeyValue = "sk-zy-53cdaa462e1fb1f3426ebb5d3a9e17ecfb0c5db39dd162af"
+    static func makeGift() -> AIProvider {
+        AIProvider(
+            id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            name: "OpenVolt Free",
+            kind: .custom,
+            baseURL: "https://api.zyloo.io/v1",
+            models: ["zyloo/claude-sonnet-4-6", "zyloo/gpt-5.4"],
+            apiKeyRef: giftKeyRef,
+            isDefault: true,
+            isGift: true,
+            modelDisplayNames: [
+                "zyloo/claude-sonnet-4-6": "Claude Sonnet 4.6",
+                "zyloo/gpt-5.4": "GPT 5.4"
+            ]
+        )
     }
 }
 

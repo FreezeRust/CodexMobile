@@ -197,12 +197,20 @@ struct ChatView: View {
 
     // MARK: - Toolbar (model picker)
 
+    private var currentModelLabel: String {
+        guard let sel = chat?.selection else { return "Модель" }
+        if let p = settings.provider(for: sel.providerID), p.isGift {
+            return p.displayName(for: sel.model)
+        }
+        return sel.model
+    }
+
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarTrailing) {
             Button { showModelPicker = true } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "cpu")
-                    Text(chat?.selection?.model ?? "Модель").font(.caption.bold()).lineLimit(1)
+                    Text(currentModelLabel).font(.caption.bold()).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption2)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 5)
@@ -219,10 +227,12 @@ struct ChatView: View {
                         description: Text("Добавь нейросеть по API в «Настройки → Нейросети»."))
                 } else {
                     ForEach(settings.providers) { p in
-                        Section(p.name) {
+                        Section(p.isGift ? "🎁 \(p.name)" : p.name) {
                             ForEach(p.models, id: \.self) { m in
-                                let sel = ModelSelection(providerID: p.id, model: m, displayName: "\(p.name) · \(m)")
-                                modelRow(sel)
+                                let shown = p.isGift ? p.displayName(for: m) : m
+                                let sel = ModelSelection(providerID: p.id, model: m,
+                                                         displayName: p.isGift ? shown : "\(p.name) · \(m)")
+                                modelRow(sel, label: shown)
                             }
                         }
                     }
@@ -239,14 +249,14 @@ struct ChatView: View {
         .presentationDetents([.medium, .large])
     }
 
-    private func modelRow(_ sel: ModelSelection) -> some View {
+    private func modelRow(_ sel: ModelSelection, label: String) -> some View {
         Button {
             store.setSelection(sel, projectID: projectID, chatID: chatID)
             showModelPicker = false
         } label: {
             HStack {
                 Image(systemName: "cpu").foregroundStyle(settings.accentColor)
-                Text(sel.model).foregroundStyle(.primary)
+                Text(label).foregroundStyle(.primary)
                 Spacer()
                 if chat?.selection?.id == sel.id {
                     Image(systemName: "checkmark").foregroundStyle(settings.accentColor)

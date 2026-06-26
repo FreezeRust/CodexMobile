@@ -73,9 +73,21 @@ struct SettingsView: View {
 
     // MARK: - Providers (нейросети по API)
 
-    private var providersSection: some View {
+    @ViewBuilder private var providersSection: some View {
+        // Gift (free) provider — locked, can't be viewed/edited/removed.
+        if let gift = settings.providers.first(where: { $0.isGift }) {
+            Section {
+                giftRow(gift)
+            } header: {
+                Text("Бесплатно в подарок 🎁")
+            } footer: {
+                Text("Эти модели подарены вам за установку OpenVolt. Настройки этого профиля закрыты для редактирования.")
+            }
+        }
+
+        // User providers
         Section {
-            ForEach(settings.providers) { p in
+            ForEach(settings.providers.filter { !$0.isGift }) { p in
                 Button { editing = p } label: { providerRow(p) }
                     .swipeActions {
                         Button("По умолч.") { settings.setDefault(p) }.tint(settings.accentColor)
@@ -88,14 +100,34 @@ struct SettingsView: View {
                 Button { newProvider = ProviderPreset.openRouter.template } label: { Label("OpenRouter (сотни моделей)", systemImage: "point.3.connected.trianglepath.dotted") }
                 Button { newProvider = ProviderPreset.custom.template } label: { Label("Custom (свой endpoint)", systemImage: "slider.horizontal.3") }
             } label: {
-                Label("Добавить нейросеть", systemImage: "plus")
+                Label("Добавить свою нейросеть", systemImage: "plus")
             }
         } header: {
-            Text("Нейросети по API")
+            Text("Свои нейросети по API")
         } footer: {
-            Text("OpenAI, Anthropic, OpenRouter и любой OpenAI-совместимый endpoint (Custom). " +
-                 "Совет: OpenRouter = один ключ на сотни моделей.")
+            Text("OpenAI, Anthropic, OpenRouter и любой OpenAI-совместимый endpoint (Custom).")
         }
+    }
+
+    private func giftRow(_ p: AIProvider) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10).fill(settings.accentGradient.opacity(0.25)).frame(width: 38, height: 38)
+                Image(systemName: "gift.fill").foregroundStyle(settings.accentGradient)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(p.name).font(.headline).foregroundStyle(.primary)
+                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                }
+                Text(p.models.map { p.displayName(for: $0) }.joined(separator: ", "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if p.isDefault { Image(systemName: "star.fill").foregroundStyle(settings.accentColor) }
+        }
+        .contentShape(Rectangle())
+        // No tap action / no navigation — settings are locked.
     }
 
     private func providerRow(_ p: AIProvider) -> some View {

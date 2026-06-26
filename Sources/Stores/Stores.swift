@@ -253,14 +253,34 @@ final class SettingsStore: ObservableObject {
     var cardColor: Color? { theme.card(custom: customCardColor) }
 
     func loadProviders() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([AIProvider].self, from: data),
-              !decoded.isEmpty else {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([AIProvider].self, from: data) {
+            providers = decoded
+        } else {
             providers = []
-            return
         }
-        providers = decoded
+        installGiftProvider()
     }
+
+    /// Ensures the built-in free provider exists, is up to date, and its key is stored.
+    private func installGiftProvider() {
+        let gift = AIProvider.makeGift()
+        KeychainService.set(AIProvider.giftKeyValue, for: AIProvider.giftKeyRef)
+        if let i = providers.firstIndex(where: { $0.isGift }) {
+            // keep it fresh (models/url/names) but preserve nothing user-editable
+            var g = gift
+            g.isDefault = providers[i].isDefault
+            providers[i] = g
+        } else {
+            // first time: gift goes first and becomes default
+            providers.insert(gift, at: 0)
+            if !providers.contains(where: { $0.isDefault && !$0.isGift }) {
+                for j in providers.indices { providers[j].isDefault = providers[j].isGift }
+            }
+        }
+        save()
+    }
+
     func save() {
         if let data = try? JSONEncoder().encode(providers) { UserDefaults.standard.set(data, forKey: key) }
     }
@@ -278,6 +298,7 @@ final class SettingsStore: ObservableObject {
         save()
     }
     func delete(_ p: AIProvider) {
+        guard !p.isGift else { return }   // gift provider can't be removed
         KeychainService.delete(p.apiKeyRef)
         providers.removeAll { $0.id == p.id }
         if !providers.contains(where: { $0.isDefault }), let f = providers.first { setDefault(f) }
@@ -294,7 +315,8 @@ final class SettingsStore: ObservableObject {
         var out: [ModelSelection] = []
         for p in providers {
             for m in p.models {
-                out.append(ModelSelection(providerID: p.id, model: m, displayName: "\(p.name) · \(m)"))
+                let shown = p.isGift ? p.displayName(for: m) : "\(p.name) · \(m)"
+                out.append(ModelSelection(providerID: p.id, model: m, displayName: shown))
             }
         }
         return out
