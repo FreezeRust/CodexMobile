@@ -78,6 +78,8 @@ struct AIProvider: Identifiable, Codable, Hashable {
             models: ["zyloo/claude-sonnet-4-6", "zyloo/gpt-5.4"],
             apiKeyRef: giftKeyRef,
             isDefault: true,
+            supportsImages: true,        // images generated via chat (returns image link)
+            imageModel: "zyloo/gpt-5.4",
             isGift: true,
             modelDisplayNames: [
                 "zyloo/claude-sonnet-4-6": "Claude Sonnet 4.6",

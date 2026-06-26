@@ -314,30 +314,29 @@ struct ChatView: View {
         isStreaming = true; defer { isStreaming = false }
 
         let client = AIClient(provider: provider, model: chat?.selection?.model ?? provider.primaryModel)
-        do {
-            let b64 = try await client.generateImage(prompt: prompt)
-            if b64.isEmpty {
-                store.updateMessage(aid, projectID: projectID, chatID: chatID) {
-                    $0.generatingImage = false
-                    $0.content = "⚠️ Не удалось получить изображение."
-                }
-            } else {
-                let att = Attachment(kind: .image, fileName: "generated_\(Int(Date().timeIntervalSince1970)).png",
-                                     mimeType: "image/png", base64: b64)
-                store.updateMessage(aid, projectID: projectID, chatID: chatID) {
-                    $0.generatingImage = false
-                    $0.content = ""
-                    $0.attachments = [att]
-                }
-            }
-            store.save()
-        } catch {
+        let b64 = await imageBase64(client: client, prompt: prompt)
+        if b64.isEmpty {
             store.updateMessage(aid, projectID: projectID, chatID: chatID) {
                 $0.generatingImage = false
-                $0.content = "⚠️ \(error.localizedDescription)"
+                $0.content = "⚠️ Не удалось создать изображение. Попробуй ещё раз."
             }
-            store.save()
+        } else {
+            let att = Attachment(kind: .image, fileName: "generated_\(Int(Date().timeIntervalSince1970)).png",
+                                 mimeType: "image/png", base64: b64)
+            store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                $0.generatingImage = false
+                $0.content = ""
+                $0.attachments = [att]
+            }
         }
+        store.save()
+    }
+
+    /// Try the dedicated images endpoint; if it fails, generate via chat (image link).
+    private func imageBase64(client: AIClient, prompt: String) async -> String {
+        if let b64 = try? await client.generateImage(prompt: prompt), !b64.isEmpty { return b64 }
+        if let b64 = try? await client.generateImageViaChat(prompt: prompt), !b64.isEmpty { return b64 }
+        return ""
     }
 
     private func currentAssistantID() -> UUID {
@@ -436,10 +435,22 @@ struct ChatView: View {
 
         let client = AIClient(provider: provider, model: sel.model)
         var acc = ""
+        var showingImagePanel = false
         do {
             for try await token in client.stream(messages: conversationHistory()) {
                 acc += token
-                store.updateLastAssistantMessage(acc, projectID: projectID, chatID: chatID)
+                // If the model is producing an image answer, swap to the generation panel
+                // instead of showing raw "Processing image" / links.
+                if !showingImagePanel && ResponseParser.looksLikeImageAnswer(acc) {
+                    showingImagePanel = true
+                    store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                        $0.generatingImage = true
+                        $0.content = ""
+                    }
+                }
+                if !showingImagePanel {
+                    store.updateLastAssistantMessage(acc, projectID: projectID, chatID: chatID)
+                }
             }
             if acc.isEmpty {
                 store.updateLastAssistantMessage(
@@ -459,18 +470,44 @@ struct ChatView: View {
                                           provider: AIProvider, client: AIClient) async {
         let poll = ResponseParser.extractPoll(from: acc)
         let tasks = ResponseParser.extractTasks(from: acc)
-        let cleaned = ResponseParser.stripControlBlocks(acc)
 
+        // Case A: the model returned an image link in chat — download & attach it.
+        if let urlStr = ResponseParser.firstImageURL(in: acc) {
+            store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                $0.generatingImage = true
+                $0.content = ""
+            }
+            let b64 = await AIClient.downloadBase64(urlStr) ?? ""
+            store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                $0.generatingImage = false
+                if !b64.isEmpty {
+                    $0.attachments.append(Attachment(kind: .image,
+                        fileName: "image_\(Int(Date().timeIntervalSince1970)).png",
+                        mimeType: "image/png", base64: b64))
+                    $0.content = ResponseParser.stripImageNoise(acc)
+                } else {
+                    // download failed — at least keep a tappable note
+                    $0.content = ResponseParser.stripImageNoise(acc).isEmpty
+                        ? "Изображение готово, но не удалось загрузить предпросмотр."
+                        : ResponseParser.stripImageNoise(acc)
+                }
+            }
+            store.save()
+            return
+        }
+
+        let cleaned = ResponseParser.stripControlBlocks(acc)
         store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+            $0.generatingImage = false
             $0.content = cleaned
             if let poll { $0.poll = poll }
             if let tasks { $0.tasks = tasks }
         }
 
-        // Image generation if requested — show the animated placeholder first
+        // Explicit ```image prompt``` request (if a provider has a real images endpoint)
         if let imgPrompt = ResponseParser.extractImagePrompt(from: acc), provider.supportsImages {
             store.updateMessage(aid, projectID: projectID, chatID: chatID) { $0.generatingImage = true }
-            let b64 = (try? await client.generateImage(prompt: imgPrompt)) ?? ""
+            let b64 = await imageBase64(client: client, prompt: imgPrompt)
             store.updateMessage(aid, projectID: projectID, chatID: chatID) {
                 $0.generatingImage = false
                 if !b64.isEmpty {

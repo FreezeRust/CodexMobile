@@ -208,6 +208,28 @@ struct AIClient {
         return ""
     }
 
+    /// Generates an image via the CHAT endpoint (model returns a markdown image link).
+    /// Returns base64 of the downloaded image, or "" on failure.
+    func generateImageViaChat(prompt: String) async throws -> String {
+        let msg = Message(role: .user, content: "Сгенерируй изображение: \(prompt)")
+        var full = ""
+        for try await token in stream(messages: [msg]) { full += token }
+        if let urlStr = ResponseParser.firstImageURL(in: full),
+           let b64 = await Self.downloadBase64(urlStr) {
+            return b64
+        }
+        return ""
+    }
+
+    /// Download a remote image and return base64.
+    static func downloadBase64(_ urlString: String) async -> String? {
+        guard let url = URL(string: urlString) else { return nil }
+        if let (data, _) = try? await URLSession.shared.data(from: url), !data.isEmpty {
+            return data.base64EncodedString()
+        }
+        return nil
+    }
+
     // MARK: - Helpers
 
     private func endpoint(_ path: String) -> String {
@@ -329,6 +351,50 @@ enum ResponseParser {
         for fence in ["poll", "image", "tasks", "mkdir", "rm", "run", "board"] {
             let pat = "```\(fence)\\s*\\n[\\s\\S]*?```"
             if let r = try? NSRegularExpression(pattern: pat, options: .caseInsensitive) {
+                let ns = t as NSString
+                t = r.stringByReplacingMatches(in: t, range: NSRange(location: 0, length: ns.length), withTemplate: "")
+            }
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// First image URL from markdown ![alt](url) or a bare image URL.
+    static func firstImageURL(in text: String) -> String? {
+        // markdown image
+        if let r = try? NSRegularExpression(pattern: "!\\[[^\\]]*\\]\\((https?://[^)\\s]+)\\)") {
+            let ns = text as NSString
+            if let m = r.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) {
+                return ns.substring(with: m.range(at: 1))
+            }
+        }
+        // bare image url
+        if let r = try? NSRegularExpression(pattern: "(https?://[^\\s)]+\\.(?:png|jpg|jpeg|webp|gif))",
+                                            options: .caseInsensitive) {
+            let ns = text as NSString
+            if let m = r.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) {
+                return ns.substring(with: m.range(at: 1))
+            }
+        }
+        return nil
+    }
+
+    /// True if the response looks like an in-progress / generated image answer.
+    static func looksLikeImageAnswer(_ text: String) -> Bool {
+        firstImageURL(in: text) != nil
+            || text.contains("Processing image")
+            || text.contains("生成中")
+            || text.contains("🎨")
+    }
+
+    /// Removes image-generation noise + the markdown image, leaving clean text.
+    static func stripImageNoise(_ text: String) -> String {
+        var t = text
+        for pat in ["!\\[[^\\]]*\\]\\([^)]*\\)",           // markdown image
+                    "\\[[^\\]]*\\]\\(https?://[^)]*\\)",   // markdown link (download)
+                    ">.*Processing image.*",
+                    ">.*生成中.*",
+                    ">.*notify you when your image.*"] {
+            if let r = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) {
                 let ns = t as NSString
                 t = r.stringByReplacingMatches(in: t, range: NSRange(location: 0, length: ns.length), withTemplate: "")
             }

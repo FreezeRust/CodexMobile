@@ -16,6 +16,7 @@ struct BoardView: View {
     @State private var showNew = false
     @State private var newTitle = ""
     @State private var connectingFrom: UUID?      // node id we're drawing a rope from
+    @State private var viewSize: CGSize = .zero
 
     private let cardW: CGFloat = 170
     private let cardH: CGFloat = 78
@@ -23,29 +24,32 @@ struct BoardView: View {
     private var board: Board { store.project(projectID)?.board ?? Board() }
 
     var body: some View {
-        ZStack {
-            (settings.bgColor ?? Color(hex: 0x0D0A1F)).ignoresSafeArea()
-            dotGrid
+        GeometryReader { geo in
+            ZStack {
+                (settings.bgColor ?? Color(hex: 0x0D0A1F)).ignoresSafeArea()
+                dotGrid
 
-            // Full-screen layer that captures pan & zoom on empty space.
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(panGesture)
-                .simultaneousGesture(zoomGesture)
+                // Full-screen layer that captures pan & zoom on empty space.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(panGesture)
+                    .simultaneousGesture(zoomGesture)
 
-            // Nodes/ropes on top; transparent gaps fall through to the layer above.
-            canvasContent
-                .scaleEffect(scale)
-                .offset(offset)
-                .allowsHitTesting(true)
+                // Nodes/ropes layer: anchored top-left, transformed by scale+offset.
+                canvasContent
+                    .scaleEffect(scale, anchor: .topLeading)
+                    .offset(offset)
 
-            controls
+                controls
+            }
+            .onAppear { viewSize = geo.size }
+            .onChange(of: geo.size) { _, s in viewSize = s }
         }
         .navigationTitle("Доска")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button { showNew = true } label: { Image(systemName: "plus") }
+                Button { addNodeAtCenter() } label: { Image(systemName: "plus") }
                 Menu {
                     Button { setScale(scale + 0.25) } label: { Label("Приблизить", systemImage: "plus.magnifyingglass") }
                     Button { setScale(scale - 0.25) } label: { Label("Отдалить", systemImage: "minus.magnifyingglass") }
@@ -58,10 +62,9 @@ struct BoardView: View {
             Button("Создать") {
                 let t = newTitle.trimmingCharacters(in: .whitespaces)
                 if !t.isEmpty {
-                    // place near current view center in canvas coords
-                    let cx = (-offset.width / scale) + 140
-                    let cy = (-offset.height / scale) + 160
-                    store.addNode(projectID: projectID, title: t, x: Double(cx), y: Double(cy))
+                    let p = centerCanvasPoint()
+                    let id = store.addNode(projectID: projectID, title: t, x: Double(p.x), y: Double(p.y))
+                    _ = id
                 }
                 newTitle = ""
             }
@@ -76,6 +79,15 @@ struct BoardView: View {
         }
     }
 
+    /// Canvas coordinate of the current screen center (so new nodes appear in view).
+    private func centerCanvasPoint() -> CGPoint {
+        let cx = (viewSize.width / 2 - offset.width) / scale - cardW / 2
+        let cy = (viewSize.height / 2 - offset.height) / scale - cardH / 2
+        return CGPoint(x: cx, y: cy)
+    }
+
+    private func addNodeAtCenter() { showNew = true }
+
     private var emptyHint: some View {
         VStack(spacing: 6) {
             Image(systemName: "hand.draw").font(.title2).foregroundStyle(.secondary)
@@ -84,7 +96,7 @@ struct BoardView: View {
         }
         .padding(14)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-        .padding(.bottom, 100)
+        .padding(.bottom, 120)
     }
 
     // MARK: - Canvas content (ropes + nodes)
@@ -110,7 +122,9 @@ struct BoardView: View {
                     .position(x: CGFloat(node.x) + cardW/2, y: CGFloat(node.y) + cardH/2)
             }
         }
-        .frame(width: 4000, height: 4000, alignment: .topLeading)
+        // Fill the screen, anchored top-left so canvas coords map from the origin.
+        // Nodes placed beyond bounds still render (no clipping) and pan into view.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func nodeView(_ node: BoardNode) -> some View {
