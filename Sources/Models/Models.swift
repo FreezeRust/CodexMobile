@@ -172,6 +172,7 @@ struct Message: Identifiable, Codable, Hashable {
     var isMarked: Bool = false          // highlighted (underline)
     var poll: Poll? = nil               // AI-generated poll
     var tasks: [AgentTask] = []         // AI-planned to-do tasks
+    var generatingImage: Bool = false   // shows the image-creation animation
     var createdAt: Date = Date()
 }
 

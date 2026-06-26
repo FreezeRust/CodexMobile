@@ -307,26 +307,35 @@ struct ChatView: View {
         errorText = nil; input = ""
 
         store.appendMessage(Message(role: .user, content: "🎨 \(prompt)"), projectID: projectID, chatID: chatID)
-        store.appendMessage(Message(role: .assistant, content: "Генерирую изображение…"),
-                            projectID: projectID, chatID: chatID)
+        var placeholder = Message(role: .assistant, content: "")
+        placeholder.generatingImage = true
+        store.appendMessage(placeholder, projectID: projectID, chatID: chatID)
+        let aid = currentAssistantID()
         isStreaming = true; defer { isStreaming = false }
 
         let client = AIClient(provider: provider, model: chat?.selection?.model ?? provider.primaryModel)
         do {
             let b64 = try await client.generateImage(prompt: prompt)
             if b64.isEmpty {
-                store.updateLastAssistantMessage("⚠️ Не удалось получить изображение.", projectID: projectID, chatID: chatID)
+                store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                    $0.generatingImage = false
+                    $0.content = "⚠️ Не удалось получить изображение."
+                }
             } else {
                 let att = Attachment(kind: .image, fileName: "generated_\(Int(Date().timeIntervalSince1970)).png",
                                      mimeType: "image/png", base64: b64)
-                store.updateMessage(currentAssistantID(), projectID: projectID, chatID: chatID) {
-                    $0.content = "Готово ✨"
+                store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                    $0.generatingImage = false
+                    $0.content = ""
                     $0.attachments = [att]
                 }
             }
             store.save()
         } catch {
-            store.updateLastAssistantMessage("⚠️ \(error.localizedDescription)", projectID: projectID, chatID: chatID)
+            store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                $0.generatingImage = false
+                $0.content = "⚠️ \(error.localizedDescription)"
+            }
             store.save()
         }
     }
@@ -458,11 +467,16 @@ struct ChatView: View {
             if let tasks { $0.tasks = tasks }
         }
 
-        // Image generation if requested
+        // Image generation if requested — show the animated placeholder first
         if let imgPrompt = ResponseParser.extractImagePrompt(from: acc), provider.supportsImages {
-            if let b64 = try? await client.generateImage(prompt: imgPrompt), !b64.isEmpty {
-                let att = Attachment(kind: .image, fileName: "ai_image.png", mimeType: "image/png", base64: b64)
-                store.updateMessage(aid, projectID: projectID, chatID: chatID) { $0.attachments.append(att) }
+            store.updateMessage(aid, projectID: projectID, chatID: chatID) { $0.generatingImage = true }
+            let b64 = (try? await client.generateImage(prompt: imgPrompt)) ?? ""
+            store.updateMessage(aid, projectID: projectID, chatID: chatID) {
+                $0.generatingImage = false
+                if !b64.isEmpty {
+                    $0.attachments.append(Attachment(kind: .image, fileName: "ai_image.png",
+                                                     mimeType: "image/png", base64: b64))
+                }
             }
         }
 
@@ -604,6 +618,7 @@ struct CodeViewerData: Identifiable {
     let content: String
 }
 struct SelText: Identifiable { let id = UUID(); let text: String }
+struct PreviewImg: Identifiable { let id = UUID(); let image: UIImage }
 
 // MARK: - Message bubble
 
@@ -619,6 +634,8 @@ struct MessageBubble: View {
     var onPollConfirm: (String) -> Void
     var onSaveImage: (Attachment) -> Void
     var onOpenCode: (_ name: String, _ language: String, _ content: String) -> Void
+
+    @State private var previewImage: UIImage?
 
     var isUser: Bool { message.role == .user }
 
@@ -668,6 +685,10 @@ struct MessageBubble: View {
             if isUser { avatar }
             if !isUser { Spacer(minLength: 36) }
         }
+        .sheet(item: Binding(get: { previewImage.map { PreviewImg(image: $0) } },
+                             set: { previewImage = $0?.image })) { p in
+            ImagePreviewSheet(image: p.image, fileName: "image.png")
+        }
     }
 
     private var avatar: some View {
@@ -698,8 +719,13 @@ struct MessageBubble: View {
                     .frame(maxWidth: 230, maxHeight: 230)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.1)))
+                    .onTapGesture { previewImage = ui }
                     .contextMenu {
-                        Button { onSaveImage(a) } label: { Label("Сохранить в файлы", systemImage: "square.and.arrow.down") }
+                        Button {
+                            UIImageWriteToSavedPhotosAlbum(ui, nil, nil, nil)
+                        } label: { Label("Скачать в Фото", systemImage: "square.and.arrow.down") }
+                        Button { onSaveImage(a) } label: { Label("Сохранить в файлы", systemImage: "doc") }
+                        Button { previewImage = ui } label: { Label("Открыть", systemImage: "arrow.up.left.and.arrow.down.right") }
                     }
             } else {
                 Label(a.fileName, systemImage: "paperclip")
@@ -709,7 +735,9 @@ struct MessageBubble: View {
     }
 
     @ViewBuilder private var contentView: some View {
-        if message.content.isEmpty && message.attachments.isEmpty {
+        if message.generatingImage {
+            ImageGeneratingView(accent: settings.accentGradient)
+        } else if message.content.isEmpty && message.attachments.isEmpty {
             TypingDots(color: isUser ? .white : settings.accentColor)
         } else if isUser {
             Text(message.content)

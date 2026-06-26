@@ -27,18 +27,30 @@ struct BoardView: View {
             (settings.bgColor ?? Color(hex: 0x0D0A1F)).ignoresSafeArea()
             dotGrid
 
+            // Full-screen layer that captures pan & zoom on empty space.
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(panGesture)
+                .simultaneousGesture(zoomGesture)
+
+            // Nodes/ropes on top; transparent gaps fall through to the layer above.
             canvasContent
                 .scaleEffect(scale)
                 .offset(offset)
-                .gesture(panGesture.simultaneously(with: zoomGesture))
+                .allowsHitTesting(true)
 
             controls
         }
         .navigationTitle("Доска")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button { resetView() } label: { Image(systemName: "scope") }
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button { showNew = true } label: { Image(systemName: "plus") }
+                Menu {
+                    Button { setScale(scale + 0.25) } label: { Label("Приблизить", systemImage: "plus.magnifyingglass") }
+                    Button { setScale(scale - 0.25) } label: { Label("Отдалить", systemImage: "minus.magnifyingglass") }
+                    Button { resetView() } label: { Label("Сбросить вид", systemImage: "scope") }
+                } label: { Image(systemName: "ellipsis.circle") }
             }
         }
         .alert("Новая задача", isPresented: $showNew) {
@@ -59,6 +71,20 @@ struct BoardView: View {
             NodeEditor(projectID: projectID, node: node)
         }
         .overlay(alignment: .top) { connectingBanner }
+        .overlay(alignment: .bottom) {
+            if board.nodes.isEmpty { emptyHint }
+        }
+    }
+
+    private var emptyHint: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "hand.draw").font(.title2).foregroundStyle(.secondary)
+            Text("Тащи пальцем — двигать холст. Щипок — зум.\nНажми ➕ чтобы добавить задачу.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .padding(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.bottom, 100)
     }
 
     // MARK: - Canvas content (ropes + nodes)
@@ -179,15 +205,17 @@ struct BoardView: View {
                 VStack(spacing: 12) {
                     zoomButton("plus.magnifyingglass") { setScale(scale + 0.2) }
                     zoomButton("minus.magnifyingglass") { setScale(scale - 0.2) }
+                    zoomButton("scope") { resetView() }
                     Button { showNew = true } label: {
                         Image(systemName: "plus")
-                            .font(.title2.bold()).foregroundStyle(.white)
-                            .frame(width: 54, height: 54)
+                            .font(.title.bold()).foregroundStyle(.white)
+                            .frame(width: 60, height: 60)
                             .background(settings.accentGradient, in: Circle())
-                            .shadow(color: settings.accentColor.opacity(0.5), radius: 8, y: 3)
+                            .shadow(color: settings.accentColor.opacity(0.6), radius: 10, y: 4)
                     }
                 }
-                .padding(20)
+                .padding(.trailing, 18)
+                .padding(.bottom, 34)
             }
         }
     }
