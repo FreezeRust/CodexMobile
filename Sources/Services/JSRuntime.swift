@@ -120,10 +120,10 @@ final class JSRuntime {
     // MARK: - fetch (synchronous network)
     private func setupFetch() {
         // fetchSync(url) -> { status, text } ; and async fetch returning resolved-ish object
-        let fetchSync: @convention(block) (String, JSValue?) -> JSValue = { [weak self] urlStr, opts in
-            guard let self else { return JSValue(nullIn: self?.context) }
+        let ctx = context
+        let fetchSync: @convention(block) (String, JSValue?) -> JSValue = { urlStr, opts in
             guard let url = URL(string: urlStr) else {
-                return JSValue(object: ["ok": false, "status": 0, "text": "bad url"], in: self.context)
+                return JSValue(object: ["ok": false, "status": 0, "text": "bad url"], in: ctx)!
             }
             var req = URLRequest(url: url); req.timeoutInterval = 15
             if let opts, opts.isObject {
@@ -143,7 +143,7 @@ final class JSRuntime {
             }.resume()
             _ = sem.wait(timeout: .now() + 16)
             return JSValue(object: ["ok": (200...299).contains(status), "status": status, "text": body],
-                           in: self.context)
+                           in: ctx)!
         }
         context.setObject(fetchSync, forKeyedSubscript: "fetchSync" as NSString)
         // Promise-like fetch wrapper using fetchSync
@@ -211,12 +211,12 @@ final class JSRuntime {
             if let src = readFile(path) {
                 // CommonJS wrapper
                 let wrapper = "(function(){ var module={exports:{}}; var exports=module.exports;\n\(src)\n; return module.exports; })()"
-                let result = context.evaluateScript(wrapper) ?? JSValue(undefinedIn: context)
+                let result = context.evaluateScript(wrapper) ?? JSValue(undefinedIn: context)!
                 moduleCache[path] = result
                 return result
             }
         }
         logs.append("⚠️ require('\(name)'): модуль не найден (поддерживаются локальные .js, fs, path, util, assert)")
-        return JSValue(undefinedIn: context)
+        return JSValue(undefinedIn: context)!
     }
 }
