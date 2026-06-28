@@ -15,6 +15,8 @@ struct ProjectDetailView: View {
     @State private var showShare = false
     @State private var zipURL: URL?
     @State private var showFolderImporter = false
+    @State private var showZipImporter = false
+    @State private var importMsg: String?
     @State private var showSkills = false
     @State private var showInstructions = false
     @State private var showScaffolds = false
@@ -127,7 +129,13 @@ struct ProjectDetailView: View {
                             Label("Создать папку", systemImage: "folder.badge.plus")
                         }
                         Button { showFolderImporter = true } label: {
-                            Label("Импортировать папку", systemImage: "square.and.arrow.down.on.square")
+                            Label("Импортировать папку", systemImage: "folder.badge.plus")
+                        }
+                        Button { showZipImporter = true } label: {
+                            Label("Импортировать .zip", systemImage: "doc.zipper")
+                        }
+                        if let msg = importMsg {
+                            Text(msg).font(.caption2).foregroundStyle(.secondary)
                         }
                     } header: {
                         HStack {
@@ -155,8 +163,12 @@ struct ProjectDetailView: View {
             VSCodeView(projectID: projectID) { showVSCode = false }
         }
         .fileImporter(isPresented: $showFolderImporter,
-                      allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+                      allowedContentTypes: [.folder], allowsMultipleSelection: true) { result in
             importFolder(result)
+        }
+        .fileImporter(isPresented: $showZipImporter,
+                      allowedContentTypes: [.zip, .data], allowsMultipleSelection: true) { result in
+            importZip(result)
         }
         .alert("Новый чат", isPresented: $showingNewChat) {
             TextField("Тема чата", text: $newChatTitle)
@@ -201,7 +213,8 @@ struct ProjectDetailView: View {
                 Button { newFolderName = "new_folder"; showingNewFolder = true } label: {
                     Label("Новая папка", systemImage: "folder.badge.plus")
                 }
-                Button { showFolderImporter = true } label: { Label("Импорт папки", systemImage: "square.and.arrow.down.on.square") }
+                Button { showFolderImporter = true } label: { Label("Импорт папки", systemImage: "folder.badge.plus") }
+                Button { showZipImporter = true } label: { Label("Импорт .zip", systemImage: "doc.zipper") }
                 if !(project?.files.isEmpty ?? true) {
                     Button { exportZip() } label: { Label("Экспорт проекта .zip", systemImage: "doc.zipper") }
                 }
@@ -210,25 +223,71 @@ struct ProjectDetailView: View {
     }
 
     private func importFolder(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let folder = urls.first else { return }
-        guard folder.startAccessingSecurityScopedResource() else { return }
-        defer { folder.stopAccessingSecurityScopedResource() }
+        guard case .success(let urls) = result else { importMsg = "Импорт отменён"; return }
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
-                                             options: [.skipsHiddenFiles]) else { return }
-        var imported: [GeneratedFile] = []
-        for case let fileURL as URL in enumerator {
-            guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
-            // Relative path inside the folder, so structure is preserved in names.
-            let rel = fileURL.path.replacingOccurrences(of: folder.path + "/", with: "")
-            if let data = try? Data(contentsOf: fileURL) {
-                let text = String(data: data, encoding: .utf8) ?? "(бинарный файл, \(data.count) байт)"
-                let ext = fileURL.pathExtension
-                imported.append(GeneratedFile(name: rel, language: ext.isEmpty ? "text" : ext, content: text))
+        var imported: [(String, Data)] = []
+        for folder in urls {
+            let access = folder.startAccessingSecurityScopedResource()
+            defer { if access { folder.stopAccessingSecurityScopedResource() } }
+            let base = folder.standardizedFileURL.path
+            let prefix = folder.lastPathComponent   // keep top folder name
+            guard let en = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                                         options: [.skipsHiddenFiles]) else { continue }
+            for case let fileURL as URL in en {
+                guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+                var rel = fileURL.standardizedFileURL.path
+                if rel.hasPrefix(base) { rel = String(rel.dropFirst(base.count)) }
+                rel = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
+                let full = prefix + "/" + rel
+                if let data = try? Data(contentsOf: fileURL) {
+                    imported.append((full, data))
+                }
+                if imported.count >= 400 { break }
             }
-            if imported.count >= 200 { break }   // safety cap
         }
-        if !imported.isEmpty { store.attachFiles(imported, projectID: projectID) }
+        finishImport(imported, label: "папк")
+    }
+
+    private func importZip(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { importMsg = "Импорт отменён"; return }
+        var imported: [(String, Data)] = []
+        for url in urls {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            guard let zipData = try? Data(contentsOf: url) else { continue }
+            let root = url.deletingPathExtension().lastPathComponent
+            let entries = ZipArchive.read(zipData)
+            for e in entries {
+                // skip macOS junk
+                if e.path.contains("__MACOSX") || e.path.hasSuffix(".DS_Store") { continue }
+                imported.append((root + "/" + e.path, e.data))
+                if imported.count >= 400 { break }
+            }
+        }
+        finishImport(imported, label: ".zip")
+    }
+
+    /// Creates folder nodes + files from imported (path, data) pairs.
+    private func finishImport(_ items: [(String, Data)], label: String) {
+        guard !items.isEmpty else { importMsg = "Из \(label) ничего не импортировано"; return }
+        // Build the set of intermediate folders.
+        var folders = Set<String>()
+        for (path, _) in items {
+            let parts = path.split(separator: "/").map(String.init)
+            if parts.count > 1 {
+                for k in 1..<parts.count { folders.insert(parts[0..<k].joined(separator: "/")) }
+            }
+        }
+        for folder in folders.sorted() { store.addFolder(projectID: projectID, path: folder) }
+
+        var files: [GeneratedFile] = []
+        for (path, data) in items {
+            let text = String(data: data, encoding: .utf8) ?? "(бинарный файл, \(data.count) байт)"
+            let ext = (path as NSString).pathExtension
+            files.append(GeneratedFile(name: path, language: ext.isEmpty ? "text" : ext, content: text))
+        }
+        store.attachFiles(files, projectID: projectID)
+        importMsg = "Импортировано из \(label): \(folders.count) папок, \(files.count) файлов"
     }
 
     private func exportZip() {
