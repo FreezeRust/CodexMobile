@@ -152,29 +152,30 @@ enum ZipArchive {
     /// Raw DEFLATE inflate via Apple's Compression framework.
     private static func inflate(_ data: Data, expected: Int) -> Data? {
         guard !data.isEmpty else { return Data() }
-        var dst = Data(count: max(expected, 64))
+        let cap1 = max(expected, 64)
+        var dst = Data(count: cap1)
         let result: Int = dst.withUnsafeMutableBytes { dstRaw in
             data.withUnsafeBytes { srcRaw in
                 compression_decode_buffer(
-                    dstRaw.bindMemory(to: UInt8.self).baseAddress!, dst.count,
+                    dstRaw.bindMemory(to: UInt8.self).baseAddress!, cap1,
                     srcRaw.bindMemory(to: UInt8.self).baseAddress!, data.count,
                     nil, COMPRESSION_ZLIB)
             }
         }
-        if result > 0 { return dst.prefix(result) }
-        // grow buffer once if it was too small
-        if result == 0 || result == dst.count {
-            var big = Data(count: max(expected * 4, 1 << 20))
-            let r2: Int = big.withUnsafeMutableBytes { dstRaw in
-                data.withUnsafeBytes { srcRaw in
-                    compression_decode_buffer(
-                        dstRaw.bindMemory(to: UInt8.self).baseAddress!, big.count,
-                        srcRaw.bindMemory(to: UInt8.self).baseAddress!, data.count,
-                        nil, COMPRESSION_ZLIB)
-                }
+        if result > 0 && result < cap1 { return dst.prefix(result) }
+        // grow buffer if it was too small (or exactly filled)
+        let cap2 = max(expected * 4, 1 << 20)
+        var big = Data(count: cap2)
+        let r2: Int = big.withUnsafeMutableBytes { dstRaw in
+            data.withUnsafeBytes { srcRaw in
+                compression_decode_buffer(
+                    dstRaw.bindMemory(to: UInt8.self).baseAddress!, cap2,
+                    srcRaw.bindMemory(to: UInt8.self).baseAddress!, data.count,
+                    nil, COMPRESSION_ZLIB)
             }
-            if r2 > 0 { return big.prefix(r2) }
         }
+        if r2 > 0 { return big.prefix(r2) }
+        if result > 0 { return dst.prefix(result) }
         return nil
     }
 }
